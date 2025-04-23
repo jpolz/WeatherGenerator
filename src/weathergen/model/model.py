@@ -18,16 +18,18 @@ import torch
 from astropy_healpix import healpy
 from torch.utils.checkpoint import checkpoint
 
-from weathergen.model.engines import (
-    EmbeddingEngine,
-    EnsPredictionHead,
-    ForecastingEngine,
-    GlobalAssimilationEngine,
-    Local2GlobalAssimilationEngine,
-    LocalAssimilationEngine,
-    TargetPredictionEngine,
+from weathergen.datasets.stream_data import StreamData
+from weathergen.model.attention import (
+    MultiCrossAttentionHead_Varlen,
+    MultiCrossAttentionHead_Varlen_SlicedQ,
+    MultiSelfAttentionHead,
+    MultiSelfAttentionHead_Local,
+    MultiSelfAttentionHead_Varlen,
 )
-from weathergen.model.layers import MLP
+from weathergen.model.ens_prediction_head import EnsPredictionHead
+from weathergen.model.mlp import MLP
+from weathergen.model.stream_embed_linear import StreamEmbedLinear
+from weathergen.model.stream_embed_transformer import StreamEmbedTransformer
 from weathergen.model.utils import get_num_parameters
 from weathergen.utils.logger import logger
 
@@ -369,7 +371,27 @@ class Model(torch.nn.Module):
         return tuple(preds_all[0])
 
     #########################################
-    def forward(self, model_params, batch, forecast_offset, forecast_steps):
+    def forward(self, model_params: ModelParams, batch: StreamData, forecast_steps: int, fstep_start: int = 0):
+        """
+        Define forward pass of the model.
+
+        Parameters
+        ----------
+        model_params : ModelParams
+            Model parameters containing positional encodings and healpix neighborhood structure
+        batch :
+            StreamData information for current batch
+        forecast_dt : int
+            number of forecast steps
+        fstep_start : int
+            starting forecast step (default: 0)
+
+        Returns
+        -------
+        list
+            List of predictions for each target stream
+        """
+
         (streams_data, source_cell_lens, target_coords_idxs) = batch
 
         # embed
@@ -382,7 +404,7 @@ class Model(torch.nn.Module):
 
         # roll-out in latent space
         preds_all = []
-        for fstep in range(forecast_offset, forecast_offset + forecast_steps):
+        for fstep in range(fstep_start, forecast_steps):
             # prediction
             preds_all += [
                 self.predict(
