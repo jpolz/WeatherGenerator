@@ -132,6 +132,11 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
         # adjust len to split loading across all workers and ensure it is multiple of batch_size
         len_chunk = ((self.len_native // cf.num_ranks) // batch_size) * batch_size
         self.len = min(self.len, len_chunk)
+        # ensure it is multiple of batch_size
+        self.len = (self.len // batch_size) * batch_size
+
+        # include auto-encodng of input data (forecast step = 0)
+        self.auto_encode = cf.auto_encode
 
         self.rank = cf.rank
         self.num_ranks = cf.num_ranks
@@ -264,6 +269,14 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
         nhc_target = self.num_healpix_cells_target
         nhc_source = self.num_healpix_cells_source
 
+        if self.auto_encode:
+            fstep_start = 0
+        else:
+            fstep_start = 1
+            if np.any(self.perms_forecast_dt == 0):
+                logger.error("Deactivating auto-encoding requires all forecast_steps > 0. Check config.")
+                raise ValueError("Deactivating auto-encoding requires all forecast_steps > 0.")
+            
         # bidx is used to count the #batches that have been emitted
         # idx_raw is used to index into the dataset; the decoupling is needed
         # since there are empty batches
@@ -330,10 +343,10 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
 
                         # target
 
-                        # collect for all forecast steps
-                        for fstep in range(
-                            self.forecast_offset, self.forecast_offset + forecast_dt + 1
-                        ):
+                    # collect for all forecast steps
+                    for fstep in range(fstep_start, forecast_dt + 1):
+                        # collect all targets
+                        for _, ds in enumerate(stream_ds):
                             step_forecast_dt = (
                                 idx + (self.forecast_delta_hrs * fstep) // self.step_hrs
                             )
@@ -378,7 +391,8 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
 
             # compute offsets and auxiliary data needed for prediction computation
             # (info is not per stream so separate data structure)
-            target_coords_idx = compute_idxs_predict(self.forecast_offset + forecast_dt, batch)
+            assert self.target_coords_local
+            target_coords_idx = compute_idxs_predict(batch, forecast_dt, fstep_start)
 
             assert len(batch) == self.batch_size
             yield (batch, source_cell_lens, target_coords_idx, forecast_dt)
