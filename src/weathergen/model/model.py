@@ -18,18 +18,18 @@ import torch
 from astropy_healpix import healpy
 from torch.utils.checkpoint import checkpoint
 
+
 from weathergen.datasets.stream_data import StreamData
-from weathergen.model.attention import (
-    MultiCrossAttentionHead_Varlen,
-    MultiCrossAttentionHead_Varlen_SlicedQ,
-    MultiSelfAttentionHead,
-    MultiSelfAttentionHead_Local,
-    MultiSelfAttentionHead_Varlen,
+from weathergen.model.engines import (
+    EmbeddingEngine,
+    EnsPredictionHead,
+    ForecastingEngine,
+    GlobalAssimilationEngine,
+    Local2GlobalAssimilationEngine,
+    LocalAssimilationEngine,
+    TargetPredictionEngine,
 )
-from weathergen.model.ens_prediction_head import EnsPredictionHead
-from weathergen.model.mlp import MLP
-from weathergen.model.stream_embed_linear import StreamEmbedLinear
-from weathergen.model.stream_embed_transformer import StreamEmbedTransformer
+from weathergen.model.layers import MLP
 from weathergen.model.utils import get_num_parameters
 from weathergen.utils.logger import logger
 
