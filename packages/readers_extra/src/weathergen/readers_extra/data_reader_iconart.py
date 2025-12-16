@@ -28,9 +28,6 @@ from weathergen.datasets.data_reader_base import (
 
 _logger = logging.getLogger(__name__)
 
-# Use Dask synchronous scheduler to avoid conflicts with PyTorch DataLoader workers
-dask.config.set(scheduler="synchronous")
-
 
 class DataReaderIconArt(DataReaderTimestep):
     "Wrapper for ICON-ART variables - Reads Zarr format datasets"
@@ -53,6 +50,10 @@ class DataReaderIconArt(DataReaderTimestep):
         stream_info : dict
             Stream metadata
         """
+
+        # Use Dask synchronous scheduler to avoid conflicts with PyTorch DataLoader workers
+        dask.config.set(scheduler="synchronous")
+
         # Open Zarr dataset with Xarray
         self.ds = xr.open_zarr(filename, consolidated=True)
 
