@@ -29,6 +29,8 @@ class RegionLibrary:
         "tropics": (-30.0, 30.0, -180.0, 180.0),
         "belgium": (49, 52, 2, 7),
         "europe": (35, 70, -10, 40),
+        # Example: Geneva, Switzerland (±0.1°)
+        "geneva": (46.1, 46.3, 6.05, 6.25),
     }
 
 
