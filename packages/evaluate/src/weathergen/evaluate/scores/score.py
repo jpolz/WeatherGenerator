@@ -187,6 +187,8 @@ class Scores:
             "vrmse": self.calc_vrmse,
             "bias": self.calc_bias,
             "acc": self.calc_acc,
+            "rps": self.calc_rps,
+            # TODO: "rpss": self.calc_rpss,
             "froct": self.calc_froct,
             "troct": self.calc_troct,
             "fact": self.calc_fact,
@@ -287,6 +289,8 @@ class Scores:
             "froct": ["p", "gt", "p_next", "gt_next"],
             "troct": ["p", "gt", "p_next", "gt_next"],
             "acc": ["p", "gt", "c"],
+            "rps": ["p", "gt", "c"],
+            # TODO: "rpss": ["p", "gt", "c"],
             "fact": ["p", "c"],
             "tact": ["gt", "c"],
         }
@@ -1010,6 +1014,72 @@ class Scores:
         )
 
         return acc
+
+    def calc_rps(
+        self,
+        p: xr.DataArray,
+        gt: xr.DataArray,
+        c: xr.DataArray,
+    ) -> xr.DataArray:
+        """
+        Calculate Ranked Probability Score (RPS) using quintile categories.
+
+        RPS currently evaluates deterministic forecasts against categorical thresholds
+        from precomputed climatology quintile boundaries (5 categories).
+        TODO: Extend to probabilistic forecasts.
+
+        Parameters
+        ----------
+        p: xr.DataArray
+            Forecast data array
+        gt: xr.DataArray
+            Ground truth data array
+        c: xr.DataArray
+            Climatology data array containing precomputed quintile boundaries.
+            Expected to have a 'quintile' dimension with 4 values (0.2, 0.4, 0.6, 0.8).
+
+        Returns
+        -------
+        xr.DataArray
+            Ranked Probability Score (RPS). Lower values indicate better forecasts.
+            Perfect score is 0.
+        """
+
+        if c is None:
+            return xr.full_like(p.sum(self._agg_dims), np.nan)
+
+        # Use precomputed quintile boundaries from climatology
+        boundaries = c
+        
+        # Number of categories (quintiles = 5 categories)
+        n_categories = 5
+        
+        # Categorize forecast and observation
+        # Category 0: x <= q0.2, Category 1: q0.2 < x <= q0.4, ..., Category 4: x > q0.8
+        p_cat = xr.zeros_like(p, dtype=int)
+        gt_cat = xr.zeros_like(gt, dtype=int)
+        
+        for i, q in enumerate(boundaries):
+            p_cat = p_cat + (p > q)
+            gt_cat = gt_cat + (gt > q)
+        
+        # Create cumulative probability vectors
+        # For deterministic forecasts: cumsum of one-hot encoded categories
+        rps_sum = xr.zeros_like(p)
+        
+        for k in range(n_categories):
+            # Cumulative probability at category k
+            # For deterministic: P(category <= k) = 1 if forecast_cat <= k, else 0
+            p_cumulative = (p_cat <= k).astype(float)
+            gt_cumulative = (gt_cat <= k).astype(float)
+            
+            # Squared difference of cumulative probabilities
+            rps_sum = rps_sum + (p_cumulative - gt_cumulative) ** 2
+        
+        # RPS = (1/K) * sum of squared differences, aggregated over spatial dimensions
+        rps = (rps_sum / n_categories).mean(self._agg_dims)
+        
+        return rps
 
     def calc_bias(self, p: xr.DataArray, gt: xr.DataArray) -> xr.DataArray:
         """
