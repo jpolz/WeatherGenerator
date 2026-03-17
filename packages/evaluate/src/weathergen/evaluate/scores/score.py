@@ -1015,6 +1015,29 @@ class Scores:
 
         return acc
 
+    def calc_brier_score(
+        self,
+        p: xr.DataArray,
+        gt: xr.DataArray,
+    ) -> xr.DataArray:
+        """
+        Calculate Brier Score (BS) for deterministic forecasts.
+
+        Parameters
+        ----------
+        p: xr.DataArray
+            Forecast data array (binary, where 1 indicates event occurrence and 0 indicates non-occurrence)
+        gt: xr.DataArray
+            Ground truth data array (binary, where 1 indicates event occurrence and 0 indicates non-occurrence)
+
+        Returns
+        -------
+        xr.DataArray
+            Brier Score (BS). Lower values indicate better forecasts. Perfect score is 0.
+        """
+        bs = np.mean((p - gt) ** 2, axis=self._agg_dims)
+        return bs
+
     def calc_rps(
         self,
         p: xr.DataArray,
