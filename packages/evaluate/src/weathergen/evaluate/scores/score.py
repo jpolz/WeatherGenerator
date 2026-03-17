@@ -176,6 +176,7 @@ class Scores:
         self._ens_dim = self._validate_ens_dim(ens_dim)
 
         self.det_metrics_dict = {
+            "brier_score": self.calc_brier_score,
             "ets": self.calc_ets,
             "pss": self.calc_pss,
             "fbi": self.calc_fbi,
@@ -289,8 +290,9 @@ class Scores:
             "froct": ["p", "gt", "p_next", "gt_next"],
             "troct": ["p", "gt", "p_next", "gt_next"],
             "acc": ["p", "gt", "c"],
-            "rps": ["p", "gt", "c"],
-            # TODO: "rpss": ["p", "gt", "c"],
+            "brier_score": ["p", "gt", "q"],
+            "rps": ["p", "gt", "q"],
+            # TODO: "rpss": ["p", "gt", "q"],
             "fact": ["p", "c"],
             "tact": ["gt", "c"],
         }
@@ -301,6 +303,7 @@ class Scores:
             "p_next": data.prediction_next,
             "gt_next": data.ground_truth_next,
             "c": data.climatology,
+            "q": data.climatology,  # TODO: replace with data.quintiles once added to VerifiedData
         }
 
         # assign p and gt by default if metrics do not have specific args
@@ -1019,36 +1022,54 @@ class Scores:
         self,
         p: xr.DataArray,
         gt: xr.DataArray,
+        q: xr.DataArray,
     ) -> xr.DataArray:
         """
-        Calculate Brier Score (BS) for deterministic forecasts.
+        Calculate the mean Brier Score (BS) across quintile boundary thresholds.
+
+        For each threshold q_k in the quintile boundaries, BS measures the mean squared
+        error between binary exceedance indicators of forecast and observation:
+            BS_k = mean( (I(p > q_k) - I(gt > q_k))^2 )
+        The returned value is the mean BS across all thresholds.
 
         Parameters
         ----------
         p: xr.DataArray
-            Forecast data array (binary, where 1 indicates event occurrence and 0 indicates non-occurrence)
+            Forecast data array
         gt: xr.DataArray
-            Ground truth data array (binary, where 1 indicates event occurrence and 0 indicates non-occurrence)
+            Ground truth data array
+        q: xr.DataArray
+            Quintile boundary data array (e.g. with a 'quintile' dimension containing
+            values [0.2, 0.4, 0.6, 0.8]).
 
         Returns
         -------
         xr.DataArray
-            Brier Score (BS). Lower values indicate better forecasts. Perfect score is 0.
+            Mean Brier Score across quintile thresholds. Lower is better, perfect score is 0.
+            TODO: decide whether to return BS per threshold or the mean across thresholds. Currently returns the mean.
         """
-        bs = np.mean((p - gt) ** 2, axis=self._agg_dims)
-        return bs
+        if q is None:
+            return xr.full_like(p.mean(self._agg_dims), np.nan)
+
+        bs_per_threshold = []
+        for threshold in q:
+            p_binary = (p > threshold).astype(float)
+            gt_binary = (gt > threshold).astype(float)
+            bs_per_threshold.append(self._mean((p_binary - gt_binary) ** 2))
+
+        return sum(bs_per_threshold) / len(bs_per_threshold)
 
     def calc_rps(
         self,
         p: xr.DataArray,
         gt: xr.DataArray,
-        c: xr.DataArray,
+        q: xr.DataArray,
     ) -> xr.DataArray:
         """
         Calculate Ranked Probability Score (RPS) using quintile categories.
 
         RPS currently evaluates deterministic forecasts against categorical thresholds
-        from precomputed climatology quintile boundaries (5 categories).
+        from precomputed quintile boundaries (5 categories).
         TODO: Extend to probabilistic forecasts.
 
         Parameters
@@ -1057,8 +1078,8 @@ class Scores:
             Forecast data array
         gt: xr.DataArray
             Ground truth data array
-        c: xr.DataArray
-            Climatology data array containing precomputed quintile boundaries.
+        q: xr.DataArray
+            Quintile boundary data array containing precomputed quintile boundaries.
             Expected to have a 'quintile' dimension with 4 values (0.2, 0.4, 0.6, 0.8).
 
         Returns
@@ -1068,11 +1089,11 @@ class Scores:
             Perfect score is 0.
         """
 
-        if c is None:
+        if q is None:
             return xr.full_like(p.sum(self._agg_dims), np.nan)
 
-        # Use precomputed quintile boundaries from climatology
-        boundaries = c
+        # Use precomputed quintile boundaries
+        boundaries = q
         
         # Number of categories (quintiles = 5 categories)
         n_categories = 5
