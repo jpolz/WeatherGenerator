@@ -76,7 +76,6 @@ class VerifiedData:
     prediction_next: xr.DataArray | None
     ground_truth_next: xr.DataArray | None
     climatology: xr.DataArray | None
-    quantiles: xr.DataArray | None = None
 
     def __post_init__(self):
         # Perform checks on initialization
@@ -290,8 +289,8 @@ class Scores:
             "froct": ["p", "gt", "p_next", "gt_next"],
             "troct": ["p", "gt", "p_next", "gt_next"],
             "acc": ["p", "gt", "c"],
-            "rps": ["p", "gt", "q"],
-            "rpss": ["p", "gt", "q"],
+            "rps": ["p", "gt", "c"],
+            "rpss": ["p", "gt", "c"],
             "fact": ["p", "c"],
             "tact": ["gt", "c"],
         }
@@ -302,7 +301,6 @@ class Scores:
             "p_next": data.prediction_next,
             "gt_next": data.ground_truth_next,
             "c": data.climatology,
-            "q": data.quantiles,
         }
 
         # assign p and gt by default if metrics do not have specific args
@@ -928,6 +926,9 @@ class Scores:
         if c is None:
             return xr.full_like(x.sum(self._agg_dims), np.nan)
 
+        if "statistic" in c.dims:
+            c = c.sel(statistic="mean", drop=True)
+
         # Calculate anomalies
         ano = x - c
         act = ano.std(dim=self._agg_dims)
@@ -1006,6 +1007,9 @@ class Scores:
 
         if c is None:
             return xr.full_like(p.sum(self._agg_dims), np.nan)
+
+        if "statistic" in c.dims:
+            c = c.sel(statistic="mean", drop=True)
 
         # Calculate anomalies
         fcst_ano, obs_ano = p - c, gt - c
