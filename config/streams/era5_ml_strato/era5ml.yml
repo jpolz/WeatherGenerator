@@ -1,0 +1,228 @@
+# (C) Copyright 2025 WeatherGenerator contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation
+# nor does it submit to any jurisdiction.
+
+ERA5ml :
+  type : anemoi
+  filenames : ['aifs-ea-an-oper-0001-mars-o96-1979-2022-6h-v7-ml137.zarr']
+  stream_id : 0
+  # Upper stratosphere (u/v/t, no q): levels 5/12/19/25 (~0.1/0.7/2.7/6.4 hPa)
+  # Stratospheric model levels 29–54 (~10–73 hPa), variables u, v, t
+  # Tropospheric model levels (sparse) 55–137 (~77–1013 hPa), variables u, v, q, t
+  # Surface variables: 10u, 10v, 2t, z
+  source : [
+    # surface
+    '10u', '10v', '2t', 'z',
+    # tropospheric levels (sparse, u/v/q/t)
+    'u_55', 'u_58', 'u_61', 'u_64', 'u_67', 'u_70', 'u_73', 'u_76', 'u_80', 'u_84', 'u_88', 'u_92', 'u_96', 'u_100', 'u_105', 'u_110', 'u_115', 'u_120', 'u_125', 'u_130', 'u_137',
+    'v_55', 'v_58', 'v_61', 'v_64', 'v_67', 'v_70', 'v_73', 'v_76', 'v_80', 'v_84', 'v_88', 'v_92', 'v_96', 'v_100', 'v_105', 'v_110', 'v_115', 'v_120', 'v_125', 'v_130', 'v_137',
+    'q_55', 'q_58', 'q_61', 'q_64', 'q_67', 'q_70', 'q_73', 'q_76', 'q_80', 'q_84', 'q_88', 'q_92', 'q_96', 'q_100', 'q_105', 'q_110', 'q_115', 'q_120', 'q_125', 'q_130', 'q_137',
+    't_55', 't_58', 't_61', 't_64', 't_67', 't_70', 't_73', 't_76', 't_80', 't_84', 't_88', 't_92', 't_96', 't_100', 't_105', 't_110', 't_115', 't_120', 't_125', 't_130', 't_137',
+    # stratospheric levels (u/v/t, no q) — thinned, every ~8 hPa
+    'u_29', 'u_32', 'u_36', 'u_40', 'u_44', 'u_48', 'u_51', 'u_54',
+    'v_29', 'v_32', 'v_36', 'v_40', 'v_44', 'v_48', 'v_51', 'v_54',
+    't_29', 't_32', 't_36', 't_40', 't_44', 't_48', 't_51', 't_54',
+    # upper stratosphere (u/v/t, no q) — sparse, up to ~0.1 hPa
+    'u_5', 'u_12', 'u_19', 'u_25',
+    'v_5', 'v_12', 'v_19', 'v_25',
+    't_5', 't_12', 't_19', 't_25',
+    ]
+  target : [
+    # surface
+    '10u', '10v', '2t', 'z',
+    # tropospheric levels (sparse, u/v/q/t)
+    'u_55', 'u_58', 'u_61', 'u_64', 'u_67', 'u_70', 'u_73', 'u_76', 'u_80', 'u_84', 'u_88', 'u_92', 'u_96', 'u_100', 'u_105', 'u_110', 'u_115', 'u_120', 'u_125', 'u_130', 'u_137',
+    'v_55', 'v_58', 'v_61', 'v_64', 'v_67', 'v_70', 'v_73', 'v_76', 'v_80', 'v_84', 'v_88', 'v_92', 'v_96', 'v_100', 'v_105', 'v_110', 'v_115', 'v_120', 'v_125', 'v_130', 'v_137',
+    'q_55', 'q_58', 'q_61', 'q_64', 'q_67', 'q_70', 'q_73', 'q_76', 'q_80', 'q_84', 'q_88', 'q_92', 'q_96', 'q_100', 'q_105', 'q_110', 'q_115', 'q_120', 'q_125', 'q_130', 'q_137',
+    't_55', 't_58', 't_61', 't_64', 't_67', 't_70', 't_73', 't_76', 't_80', 't_84', 't_88', 't_92', 't_96', 't_100', 't_105', 't_110', 't_115', 't_120', 't_125', 't_130', 't_137',
+    # stratospheric levels (u/v/t, no q) — thinned, every ~8 hPa
+    'u_29', 'u_32', 'u_36', 'u_40', 'u_44', 'u_48', 'u_51', 'u_54',
+    'v_29', 'v_32', 'v_36', 'v_40', 'v_44', 'v_48', 'v_51', 'v_54',
+    't_29', 't_32', 't_36', 't_40', 't_44', 't_48', 't_51', 't_54',
+    # upper stratosphere (u/v/t, no q) — sparse, up to ~0.1 hPa
+    'u_5', 'u_12', 'u_19', 'u_25',
+    'v_5', 'v_12', 'v_19', 'v_25',
+    't_5', 't_12', 't_19', 't_25',
+    ]
+  loss_weight : 1.
+  # location_weight is intentionally omitted to disable latitude weighting
+  masking_rate : 0.6
+  masking_rate_none : 0.05
+  token_size : 8
+  tokenize_spacetime : True
+  frequency : 6h
+  max_num_targets: 20000
+  embed :
+    net : transformer
+    num_tokens : 1
+    num_heads : 8
+    dim_embed : 256
+    num_blocks : 2
+  embed_target_coords :
+    net : linear
+    dim_embed : 256
+  target_readout :
+    num_layers : 2
+    num_heads : 4
+  pred_head :
+    ens_size : 1
+    num_layers : 1
+  # Per-level loss weights: stratospheric levels are upweighted to compensate for their
+  # smaller absolute number and to emphasise the harder-to-predict upper atmosphere.
+  # All channel_weights set to 1.0. Adjust per level to experiment with loss weighting.
+  # Log-pressure reference weights (w = ln(1013.25)/ln(ph)) are preserved as comments.
+  channel_weights :
+    # --- surface ---
+    z   : 1.0
+    10u : 1.0
+    10v : 1.0
+    2t  : 1.0
+    # --- upper stratosphere (levels 5/12/19/25, ph ≈ 0.10/0.70/2.70/6.43 hPa) ---
+    u_5 : 1.0
+    u_12: 1.0
+    u_19: 1.0
+    u_25: 1.0
+    v_5 : 1.0
+    v_12: 1.0
+    v_19: 1.0
+    v_25: 1.0
+    t_5 : 1.0
+    t_12: 1.0
+    t_19: 1.0
+    t_25: 1.0
+    # --- stratospheric levels (29–54, ph ≈ 10–73 hPa) ---
+    u_29: 1.0
+    u_30: 1.0
+    u_32: 1.0
+    u_33: 1.0
+    u_36: 1.0
+    u_37: 1.0
+    u_40: 1.0
+    u_41: 1.0
+    u_44: 1.0
+    u_45: 1.0
+    u_48: 1.0
+    u_49: 1.0
+    u_51: 1.0
+    u_53: 1.0
+    u_54: 1.0
+    v_29: 1.0
+    v_30: 1.0
+    v_32: 1.0
+    v_33: 1.0
+    v_36: 1.0
+    v_37: 1.0
+    v_40: 1.0
+    v_41: 1.0
+    v_44: 1.0
+    v_45: 1.0
+    v_48: 1.0
+    v_49: 1.0
+    v_51: 1.0
+    v_53: 1.0
+    v_54: 1.0
+    t_29: 1.0
+    t_30: 1.0
+    t_32: 1.0
+    t_33: 1.0
+    t_36: 1.0
+    t_37: 1.0
+    t_40: 1.0
+    t_41: 1.0
+    t_44: 1.0
+    t_45: 1.0
+    t_48: 1.0
+    t_49: 1.0
+    t_51: 1.0
+    t_53: 1.0
+    t_54: 1.0
+    # --- tropospheric levels (55–137, ph ≈ 77–1013 hPa) ---
+    u_55 : 1.0
+    u_58 : 1.0
+    u_61 : 1.0
+    u_64 : 1.0
+    u_67 : 1.0
+    u_70 : 1.0
+    u_73 : 1.0
+    u_76 : 1.0
+    u_80 : 1.0
+    u_84 : 1.0
+    u_88 : 1.0
+    u_92 : 1.0
+    u_96 : 1.0
+    u_100: 1.0
+    u_105: 1.0
+    u_110: 1.0
+    u_115: 1.0
+    u_120: 1.0
+    u_125: 1.0
+    u_130: 1.0
+    u_137: 1.0
+    v_55 : 1.0
+    v_58 : 1.0
+    v_61 : 1.0
+    v_64 : 1.0
+    v_67 : 1.0
+    v_70 : 1.0
+    v_73 : 1.0
+    v_76 : 1.0
+    v_80 : 1.0
+    v_84 : 1.0
+    v_88 : 1.0
+    v_92 : 1.0
+    v_96 : 1.0
+    v_100: 1.0
+    v_105: 1.0
+    v_110: 1.0
+    v_115: 1.0
+    v_120: 1.0
+    v_125: 1.0
+    v_130: 1.0
+    v_137: 1.0
+    q_55 : 1.0
+    q_58 : 1.0
+    q_61 : 1.0
+    q_64 : 1.0
+    q_67 : 1.0
+    q_70 : 1.0
+    q_73 : 1.0
+    q_76 : 1.0
+    q_80 : 1.0
+    q_84 : 1.0
+    q_88 : 1.0
+    q_92 : 1.0
+    q_96 : 1.0
+    q_100: 1.0
+    q_105: 1.0
+    q_110: 1.0
+    q_115: 1.0
+    q_120: 1.0
+    q_125: 1.0
+    q_130: 1.0
+    q_137: 1.0
+    t_55 : 1.0
+    t_58 : 1.0
+    t_61 : 1.0
+    t_64 : 1.0
+    t_67 : 1.0
+    t_70 : 1.0
+    t_73 : 1.0
+    t_76 : 1.0
+    t_80 : 1.0
+    t_84 : 1.0
+    t_88 : 1.0
+    t_92 : 1.0
+    t_96 : 1.0
+    t_100: 1.0
+    t_105: 1.0
+    t_110: 1.0
+    t_115: 1.0
+    t_120: 1.0
+    t_125: 1.0
+    t_130: 1.0
+    t_137: 1.0
