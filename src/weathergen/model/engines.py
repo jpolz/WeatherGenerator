@@ -8,6 +8,7 @@
 # nor does it submit to any jurisdiction.
 
 import dataclasses
+import math
 
 import torch
 import torch.nn as nn
@@ -1030,13 +1031,31 @@ class LatentPredictionHeadMLP(nn.Module):
         return torch.cat(outputs, dim=1)
 
 
+class EfficientBilinear(torch.nn.Module):
+    def __init__(self, in_dim_lhs, in_dim_rhs, out, bias=False):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(out, in_dim_lhs, in_dim_rhs))
+        self.bias = nn.Parameter(torch.zeros(out)) if bias else 0.0
+        self.total_in = in_dim_lhs * in_dim_rhs
+
+    def forward(self, x_lhs, x_rhs):
+        return torch.einsum("bi,oij,bj->bo", x_lhs, self.weight, x_rhs) + self.bias
+
+    def reset_parameters(self):
+        if isinstance(self.weight, nn.Parameter):
+            bound = math.sqrt(2.0 / self.total_in)
+            nn.init.uniform_(self.weight, -bound, bound)
+        if isinstance(self.bias, nn.Parameter):
+            nn.init.zeros_(self.bias)
+
+
 class BilinearDecoder(nn.Module):
     def __init__(self, stream_name, coord_dim, latent_dim, out_dim):
         super().__init__()
 
         self.name = f"BilinearDecoder_{stream_name}"
         self.latent_dim = latent_dim
-        self.bilin = nn.Bilinear(coord_dim, latent_dim, out_dim, bias=False)
+        self.bilin = EfficientBilinear(coord_dim, latent_dim, out_dim)
 
     def forward(self, coords_md, latent_nd, tcs_lens_n1):
         """
