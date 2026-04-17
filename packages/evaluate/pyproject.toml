@@ -20,7 +20,7 @@ dependencies = [
     "eckitlib==1.32.3.7", 
     "earthkit-data==0.17.0",
     "earthkit-utils==0.1.2"
-]
+    ]
 
 [dependency-groups]
 dev = [
