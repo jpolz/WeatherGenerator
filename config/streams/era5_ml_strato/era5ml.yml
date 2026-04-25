@@ -49,6 +49,7 @@ ERA5ml :
     'v_5', 'v_12', 'v_19', 'v_25',
     't_5', 't_12', 't_19', 't_25',
     ]
+  geoinfo_channels : ['lsm', 'slor', 'sdor', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
   loss_weight : 1.
   # location_weight is intentionally omitted to disable latitude weighting
   masking_rate : 0.6
@@ -72,10 +73,6 @@ ERA5ml :
   pred_head :
     ens_size : 1
     num_layers : 1
-  # Per-level loss weights: stratospheric levels are upweighted to compensate for their
-  # smaller absolute number and to emphasise the harder-to-predict upper atmosphere.
-  # All channel_weights set to 1.0. Adjust per level to experiment with loss weighting.
-  # Log-pressure reference weights (w = ln(1013.25)/ln(ph)) are preserved as comments.
   channel_weights :
     # --- surface ---
     z   : 1.0
