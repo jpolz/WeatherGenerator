@@ -18,8 +18,9 @@ ERA5pl :
   filenames : ['aifs-ea-an-oper-0001-mars-o96-1979-2023-6h-v8.zarr']
   stream_id : 1
   source : []
-  target_exclude : ['w_', 'skt', 'tcw', 'cp', 'tp', 'slor', 'sdor', 'lsm', 'z',
-                    '10u', '10v', '2t', '2d', 'sp', 'msl', 'sst', 'u10', 'v10']
+  target : ['u_850', 'v_850', 'q_850', 't_850', 'z_850', 
+            'u_500', 'v_500', 'q_500', 't_500', 'z_500']
+  geoinfo_channels : ['lsm', 'slor', 'sdor', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
   loss_weight : 1.
   # location_weight is intentionally omitted to disable latitude weighting
   masking_rate : 0.6

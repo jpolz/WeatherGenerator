@@ -11,10 +11,6 @@ ERA5ml :
   type : anemoi
   filenames : ['aifs-ea-an-oper-0001-mars-o96-1979-2022-6h-v7-ml137.zarr']
   stream_id : 0
-  # Upper stratosphere (u/v/t, no q): levels 5/12/19/25 (~0.1/0.7/2.7/6.4 hPa)
-  # Stratospheric model levels 29–54 (~10–73 hPa), variables u, v, t
-  # Tropospheric model levels (sparse) 55–137 (~77–1013 hPa), variables u, v, q, t
-  # Surface variables: 10u, 10v, 2t, z
   source : [
     # surface
     '10u', '10v', '2t', 'z',
@@ -49,6 +45,7 @@ ERA5ml :
     'v_5', 'v_12', 'v_19', 'v_25',
     't_5', 't_12', 't_19', 't_25',
     ]
+  geoinfo_channels : ['lsm', 'slor', 'sdor', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
   loss_weight : 1.
   # location_weight is intentionally omitted to disable latitude weighting
   masking_rate : 0.6
@@ -61,21 +58,17 @@ ERA5ml :
     net : transformer
     num_tokens : 1
     num_heads : 8
-    dim_embed : 512
+    dim_embed : 256
     num_blocks : 2
   embed_target_coords :
     net : linear
-    dim_embed : 512
+    dim_embed : 256
   target_readout :
     num_layers : 2
     num_heads : 4
   pred_head :
     ens_size : 1
     num_layers : 1
-  # Per-level loss weights: stratospheric levels are upweighted to compensate for their
-  # smaller absolute number and to emphasise the harder-to-predict upper atmosphere.
-  # All channel_weights set to 1.0. Adjust per level to experiment with loss weighting.
-  # Log-pressure reference weights (w = ln(1013.25)/ln(ph)) are preserved as comments.
   channel_weights :
     # --- surface ---
     z   : 1.0
@@ -83,10 +76,10 @@ ERA5ml :
     10v : 1.0
     2t  : 1.0
     # --- upper stratosphere (levels 5/12/19/25, ph ≈ 0.10/0.70/2.70/6.43 hPa) ---
-    u_5 : 1.0  # log-p ref: 5.57
-    u_12: 1.0  # log-p ref: 4.22
-    u_19: 1.0  # log-p ref: 3.61
-    u_25: 1.0  # log-p ref: 3.22
+    u_5 : 1.0
+    u_12: 1.0
+    u_19: 1.0
+    u_25: 1.0
     v_5 : 1.0
     v_12: 1.0
     v_19: 1.0
@@ -96,14 +89,14 @@ ERA5ml :
     t_19: 1.0
     t_25: 1.0
     # --- stratospheric levels (29–54, ph ≈ 10–73 hPa) — thinned ---
-    u_29: 1.0  # log-p ref: 2.96
-    u_32: 1.0  # log-p ref: 2.61
-    u_36: 1.0  # log-p ref: 2.28
-    u_40: 1.0  # log-p ref: 2.06
-    u_44: 1.0  # log-p ref: 1.89
-    u_48: 1.0  # log-p ref: 1.76
-    u_51: 1.0  # log-p ref: 1.68
-    u_54: 1.0  # log-p ref: 1.61
+    u_29: 1.0
+    u_32: 1.0
+    u_36: 1.0
+    u_40: 1.0
+    u_44: 1.0
+    u_48: 1.0
+    u_51: 1.0
+    u_54: 1.0
     v_29: 1.0
     v_32: 1.0
     v_36: 1.0
@@ -121,23 +114,23 @@ ERA5ml :
     t_51: 1.0
     t_54: 1.0
     # --- tropospheric levels (55–137, ph ≈ 77–1013 hPa) ---
-    u_55 : 1.0  # log-p ref: 1.59
-    u_58 : 1.0  # log-p ref: 1.54
-    u_61 : 1.0  # log-p ref: 1.48
-    u_64 : 1.0  # log-p ref: 1.44
-    u_67 : 1.0  # log-p ref: 1.39
-    u_70 : 1.0  # log-p ref: 1.35
-    u_73 : 1.0  # log-p ref: 1.32
-    u_76 : 1.0  # log-p ref: 1.28
-    u_80 : 1.0  # log-p ref: 1.24
-    u_84 : 1.0  # log-p ref: 1.20
-    u_88 : 1.0  # log-p ref: 1.17
-    u_92 : 1.0  # log-p ref: 1.14
-    u_96 : 1.0  # log-p ref: 1.11
-    u_100: 1.0  # log-p ref: 1.08
-    u_105: 1.0  # log-p ref: 1.06
-    u_110: 1.0  # log-p ref: 1.04
-    u_115: 1.0  # log-p ref: 1.02
+    u_55 : 1.0
+    u_58 : 1.0
+    u_61 : 1.0
+    u_64 : 1.0
+    u_67 : 1.0
+    u_70 : 1.0
+    u_73 : 1.0
+    u_76 : 1.0
+    u_80 : 1.0
+    u_84 : 1.0
+    u_88 : 1.0
+    u_92 : 1.0
+    u_96 : 1.0
+    u_100: 1.0
+    u_105: 1.0
+    u_110: 1.0
+    u_115: 1.0
     u_120: 1.0
     u_125: 1.0
     u_130: 1.0
