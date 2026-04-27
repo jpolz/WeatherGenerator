@@ -19,7 +19,7 @@ embed_orientation: "channels"
 embed_unembed_mode: "block"
 embed_dropout_rate: 0.1
 
-ae_local_dim_embed: 2048
+ae_local_dim_embed: 1024
 ae_local_num_blocks: 0
 ae_local_num_heads: 16
 ae_local_dropout_rate: 0.1
@@ -33,7 +33,7 @@ ae_adapter_with_qk_lnorm: True
 ae_adapter_with_residual: True
 ae_adapter_dropout_rate: 0.1
 
-ae_global_dim_embed: 1024
+ae_global_dim_embed: 2048
 ae_global_num_blocks: 4
 ae_global_num_heads: 32
 ae_global_dropout_rate: 0.1
@@ -137,11 +137,11 @@ training_config:
   # training_mode: "masking", "student_teacher", "latent_loss"
   training_mode: ["masking"]
 
-  num_mini_epochs: 64
+  num_mini_epochs: 128
   samples_per_mini_epoch: 4096
   shuffle: True
 
-  # ML137 dataset covers 1979–2022; reserve 2021–2022 for validation
+  # ML137 dataset covers 1979–2022; reserve 2013–2022 for validation
   start_date: 1979-01-01T00:00
   end_date: 2012-12-31T00:00
 
@@ -187,7 +187,7 @@ training_config:
   forecast :
       time_step: 06:00:00
       offset: 1
-      num_steps: 8
+      num_steps: 3
       policy: "fixed"
 
 
