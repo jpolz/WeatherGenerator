@@ -117,7 +117,7 @@ def align_clim_data(
     aligned_clim: dict = {}
 
     for fstep, target_da in target_output.items():
-        if has_statistic_dim and "sample" in target_da.dims and len(target_da.sample) > 1:
+        if has_statistic_dim:
             all_stat_coords: dict = {"statistic": all_stats}
             for dim in target_da.dims:
                 if dim in target_da.coords and target_da.coords[dim].dims == (dim,):
@@ -210,10 +210,7 @@ def align_clim_data(
 
             clim_values = prepared_clim_data.isel(grid_points=clim_indices).values
             try:
-                if len(samples) > 1:
-                    aligned_clim[fstep].loc[sel_mask] = clim_values
-                else:
-                    aligned_clim[fstep] = clim_values
+                aligned_clim[fstep].loc[sel_mask] = clim_values
             except (ValueError, IndexError) as e:
                 raise ValueError(
                     f"Failed to align climatology data with target data. "
