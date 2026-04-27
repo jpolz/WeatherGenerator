@@ -155,12 +155,6 @@ def align_clim_data(
         samples = np.unique(target_data.sample.values)
         has_sample_dim = "sample" in target_data.dims
 
-        if has_statistic_dim and not has_sample_dim and len(samples) > 1:
-            _logger.warning(
-                f"Climatology alignment is not supported for ipoint-indexed multi-sample data "
-                f"(forecast step {fstep}). Climatology data will be skipped for this step."
-            )
-
         for sample in tqdm(samples, f"Aligning climatology for forecast step {fstep}"):
             sel_key = "sample" if has_sample_dim else "ipoint"
             sel_val = sample if has_sample_dim else (target_data.sample.values == sample)
