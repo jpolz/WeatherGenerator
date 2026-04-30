@@ -100,13 +100,25 @@ class LossPhysical(LossModuleBase):
         decay_factor = list(timestep_weight_config.values())[0]["decay_factor"]
         return weights_timestep_fct(len_forecast_steps, decay_factor)
 
-    def _get_location_weights(self, stream_info, target_coords):
+    def _get_location_weights(self, stream_info, target_coords, target_channels):
         location_weight_type = stream_info.get("location_weight", None)
         if location_weight_type is None:
             return None
         weights_locations_fct = getattr(loss_fns, location_weight_type)
         weights_locations = weights_locations_fct(target_coords)
         weights_locations = weights_locations.to(device=self.device, non_blocking=True)
+
+        # Channels not listed default to 1.0 (full weighting).
+        location_weight_fraction = stream_info.get("location_weight_fraction", None)
+        if location_weight_fraction is not None:
+            fractions = torch.tensor(
+                [location_weight_fraction.get(ch, 1.0) for ch in target_channels],
+                device=self.device,
+                dtype=weights_locations.dtype,
+            )
+            weights_locations = 1.0 + fractions.unsqueeze(0) * (
+                weights_locations.unsqueeze(1) - 1.0
+            )
 
         return weights_locations
 
@@ -263,7 +275,7 @@ class LossPhysical(LossModuleBase):
 
                     # get weights for locations
                     weights_locations = self._get_location_weights(
-                        stream_info, targets_coords_batch[target_idx]
+                        stream_info, targets_coords_batch[target_idx], target_channels
                     )
 
                     # loss_st_corr: loss for give source-target correspondence
