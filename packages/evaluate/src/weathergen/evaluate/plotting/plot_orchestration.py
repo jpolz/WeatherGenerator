@@ -24,6 +24,8 @@ from tqdm import tqdm
 
 from weathergen.evaluate.io.data.io_orchestration import dispatch_parallel, get_num_workers
 from weathergen.evaluate.io.io_reader import Reader, ReaderOutput
+from weathergen.evaluate.plotting.bar_plots import BarPlots
+from weathergen.evaluate.plotting.line_plots import LinePlots
 from weathergen.evaluate.plotting.plot_utils import (
     bar_plot_metric_region,
     heat_maps_metric_region,
@@ -32,13 +34,9 @@ from weathergen.evaluate.plotting.plot_utils import (
     ratio_plot_metric_region,
     score_card_metric_region,
 )
-from weathergen.evaluate.plotting.plotter import (
-    BarPlots,
-    LinePlots,
-    Plotter,
-    QuantilePlots,
-    ScoreCards,
-)
+from weathergen.evaluate.plotting.plotter import Plotter
+from weathergen.evaluate.plotting.quantile_plots import QuantilePlots
+from weathergen.evaluate.plotting.score_cards import ScoreCards
 from weathergen.evaluate.scores.score import VerifiedData, get_score
 from weathergen.evaluate.scores.score_orchestration import get_next_fstep_data
 from weathergen.evaluate.utils.array_utils import bias_ranges, common_ranges
