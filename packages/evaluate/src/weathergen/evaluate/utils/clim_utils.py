@@ -117,7 +117,7 @@ def align_clim_data(
     aligned_clim: dict = {}
 
     for fstep, target_da in target_output.items():
-        if has_statistic_dim and "sample" in target_da.dims and len(target_da.sample) > 1:
+        if has_statistic_dim:
             all_stat_coords: dict = {"statistic": all_stats}
             for dim in target_da.dims:
                 if dim in target_da.coords and target_da.coords[dim].dims == (dim,):
@@ -154,12 +154,6 @@ def align_clim_data(
     for fstep, target_data in target_output.items():
         samples = np.unique(target_data.sample.values)
         has_sample_dim = "sample" in target_data.dims
-
-        if has_statistic_dim and not has_sample_dim and len(samples) > 1:
-            _logger.warning(
-                f"Climatology alignment is not supported for ipoint-indexed multi-sample data "
-                f"(forecast step {fstep}). Climatology data will be skipped for this step."
-            )
 
         for sample in tqdm(samples, f"Aligning climatology for forecast step {fstep}"):
             sel_key = "sample" if has_sample_dim else "ipoint"
@@ -210,10 +204,7 @@ def align_clim_data(
 
             clim_values = prepared_clim_data.isel(grid_points=clim_indices).values
             try:
-                if len(samples) > 1:
-                    aligned_clim[fstep].loc[sel_mask] = clim_values
-                else:
-                    aligned_clim[fstep] = clim_values
+                aligned_clim[fstep].loc[sel_mask] = clim_values
             except (ValueError, IndexError) as e:
                 raise ValueError(
                     f"Failed to align climatology data with target data. "

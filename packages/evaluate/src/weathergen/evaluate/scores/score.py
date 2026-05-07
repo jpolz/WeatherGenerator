@@ -1027,13 +1027,13 @@ class Scores:
         self,
         p: xr.DataArray,
         gt: xr.DataArray,
-        q: xr.DataArray,
+        c: xr.DataArray,
     ) -> xr.DataArray:
         """
         Calculate Ranked Probability Score (RPS) using quintile categories.
 
         Uses the four **quintile** boundary thresholds q20, q40, q60, q80 (selected from the
-        ``statistic`` dimension of ``q``) to define five categories.
+        ``statistic`` dimension of ``c``) to define five categories.
 
         Supports both deterministic and ensemble forecasts
 
@@ -1044,7 +1044,7 @@ class Scores:
             ``self._ens_dim`` (default ``'ens'``).
         gt: xr.DataArray
             Ground truth data array (always deterministic / single-valued).
-        q: xr.DataArray
+        c: xr.DataArray
             Climatology DataArray with a ``statistic`` dimension.  Must contain at least
             the statistics ``'q20'``, ``'q40'``, ``'q60'``, ``'q80'``.
 
@@ -1054,23 +1054,23 @@ class Scores:
             Ranked Probability Score (RPS). Lower values indicate better forecasts.
             Perfect score is 0.
         """
-        if q is None:
+        if c is None:
             return xr.full_like(p.sum(self._agg_dims), np.nan)
 
-        if "statistic" not in q.dims:
+        if "statistic" not in c.dims:
             raise ValueError(
                 "calc_rps expects a quantile DataArray with a 'statistic' dimension "
-                f"(e.g. from the new climatology format). Got dims: {q.dims}"
+                f"(e.g. from the new climatology format). Got dims: {c.dims}"
             )
-        missing = [s for s in self._RPS_QUINTILE_STATS if s not in q.statistic.values]
+        missing = [s for s in self._RPS_QUINTILE_STATS if s not in c.statistic.values]
         if missing:
             raise ValueError(
                 f"calc_rps requires statistics {self._RPS_QUINTILE_STATS} in the 'statistic' "
-                f"dimension, but {missing} are absent. Available: {list(q.statistic.values)}"
+                f"dimension, but {missing} are absent. Available: {list(c.statistic.values)}"
             )
 
         n_categories = len(self._RPS_QUINTILE_STATS) + 1
-        boundaries = q.sel(statistic=self._RPS_QUINTILE_STATS)
+        boundaries = c.sel(statistic=self._RPS_QUINTILE_STATS)
 
         # Observation CDF
         gt_cat = xr.zeros_like(gt, dtype=int)
@@ -1100,7 +1100,7 @@ class Scores:
         self,
         p: xr.DataArray,
         gt: xr.DataArray,
-        q: xr.DataArray,
+        c: xr.DataArray,
     ) -> xr.DataArray:
         """
         Calculate the Ranked Probability Skill Score (RPSS) based on quintile categories.
@@ -1116,7 +1116,7 @@ class Scores:
             Forecast data array (deterministic or ensemble with an ``ens`` dimension).
         gt: xr.DataArray
             Ground truth data array.
-        q: xr.DataArray
+        c: xr.DataArray
             Climatology DataArray with a ``statistic`` dimension containing at least
             ``'q20'``, ``'q40'``, ``'q60'``, ``'q80'``.
 
@@ -1125,14 +1125,14 @@ class Scores:
         xr.DataArray
             RPSS. Values in (-inf, 1]; positive means better than climatology.
         """
-        if q is None:
+        if c is None:
             return xr.full_like(p.mean(self._agg_dims), np.nan)
 
-        rps_fcst = self.calc_rps(p, gt, q)
+        rps_fcst = self.calc_rps(p, gt, c)
 
         # Uniform climatological reference: P_clim(cat <= k) = (k+1) / n_categories
         n_categories = len(self._RPS_QUINTILE_STATS) + 1
-        boundaries = q.sel(statistic=self._RPS_QUINTILE_STATS)
+        boundaries = c.sel(statistic=self._RPS_QUINTILE_STATS)
         gt_cat = xr.zeros_like(gt, dtype=int)
         for stat in self._RPS_QUINTILE_STATS:
             gt_cat = gt_cat + (gt > boundaries.sel(statistic=stat, drop=True))
