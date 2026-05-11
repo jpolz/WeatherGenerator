@@ -1094,7 +1094,7 @@ class Scores:
             p_cat = xr.zeros_like(p, dtype=int)
             for stat in rps_quintile_stats:
                 p_cat = p_cat + (p > boundaries.sel(statistic=stat, drop=True))
-            rps_sum = xr.zeros_like(p)
+            rps_sum = xr.zeros_like(gt)
             for k in range(n_categories):
                 rps_sum = rps_sum + ((p_cat <= k).astype(float) - (gt_cat <= k).astype(float)) ** 2
 
