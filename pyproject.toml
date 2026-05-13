@@ -228,6 +228,7 @@ weathergen-common = { workspace = true }
 weathergen-evaluate = { workspace = true }
 weathergen-metrics = { workspace = true }
 weathergen-readers-extra = { workspace = true }
+weathergen-stratosphere = { workspace = true }
 
 
 flash-attn = [
@@ -270,6 +271,7 @@ members = [
    "packages/evaluate",
    "packages/metrics",
    "packages/readers_extra",
+   "packages/science/hclimrep_stratosphere",
 # Explicitly not depending on 'packages/dashboard' : this causes issues when deploying
 # the streamlit dashboard.
 ]
