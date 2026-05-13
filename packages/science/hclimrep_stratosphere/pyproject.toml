@@ -1,0 +1,41 @@
+# (C) Copyright 2025 WeatherGenerator contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+
+[project]
+name = "weathergen-stratosphere"
+version = "0.1.0"
+description = "Stratospheric analysis tools for WeatherGenerator: SSW events, polar vortex, QBO"
+readme = "./README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "weathergen-common",
+    "matplotlib>=3.8",
+    "numpy>=2.0",
+    "xarray>=2024.1",
+    "cartopy>=0.22",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff==0.9.7",
+]
+
+[project.scripts]
+ssw-analyze = "weathergen.stratosphere.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/weathergen"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"data/level_listings.csv" = "weathergen/stratosphere/data/level_listings.csv"
+
+[tool.ruff]
+extend = "../../../pyproject.toml"
