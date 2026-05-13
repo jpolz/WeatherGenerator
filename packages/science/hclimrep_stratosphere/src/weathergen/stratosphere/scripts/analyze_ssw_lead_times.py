@@ -52,7 +52,7 @@ from weathergen.stratosphere.levels import channel_pressure
 
 _logger = logging.getLogger(__name__)
 
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zarr"
+_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 SSW_DATE = datetime(2018, 2, 12)
 
 _FALLBACK_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628"]

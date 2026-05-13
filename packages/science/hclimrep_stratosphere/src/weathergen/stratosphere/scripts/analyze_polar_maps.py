@@ -64,7 +64,7 @@ from weathergen.stratosphere.io import (
 
 _logger = logging.getLogger(__name__)
 
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zarr"
+_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Default SSW reference date (Feb 2018 event)
 SSW_DATE = datetime(2018, 2, 12)
