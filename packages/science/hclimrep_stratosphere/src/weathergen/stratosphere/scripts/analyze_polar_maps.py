@@ -152,9 +152,10 @@ def extract_polar_maps(
 
         for i, step in enumerate(steps):
             pred, tgt, times = load_step(zio, stream, step, sample)
-            # pred/tgt: (n_pts, n_channels, n_ens) → ensemble mean → (n_pts,)
-            predictions[i] = pred[:, ch_idx, :].mean(axis=-1)
-            targets[i] = tgt[:, ch_idx, 0]
+            # pred: (n_pts, n_channels, n_ens) or (n_pts, n_channels) → ensemble mean
+            # tgt:  same shape but ERA5 often has no ens dim → use mean(axis=-1) safely
+            predictions[i] = np.atleast_3d(pred)[:, ch_idx, :].mean(axis=-1)
+            targets[i] = np.atleast_3d(tgt)[:, ch_idx, :].mean(axis=-1)
             raw_times.append(times[0])
 
     datetimes = convert_times_to_datetime(np.array(raw_times))
@@ -228,9 +229,9 @@ def extract_surface_variable(
 
         for i, step in enumerate(steps):
             pred, tgt, times = load_step(zio, stream, step, sample)
-            # ensemble mean → zonal mean at target latitude
-            predictions[i] = pred[lat_indices, ch_idx, :].mean(axis=-1).mean()
-            targets[i] = tgt[lat_indices, ch_idx, 0].mean()
+            # pred/tgt may be 2D (n_pts, n_ch) or 3D (n_pts, n_ch, n_ens)
+            predictions[i] = np.atleast_3d(pred)[lat_indices, ch_idx, :].mean()
+            targets[i] = np.atleast_3d(tgt)[lat_indices, ch_idx, :].mean()
             raw_times.append(times[0])
 
     datetimes = convert_times_to_datetime(np.array(raw_times))
