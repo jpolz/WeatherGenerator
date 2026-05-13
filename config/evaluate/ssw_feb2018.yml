@@ -1,0 +1,26 @@
+# SSW February 2018 — validations config for ssw-analyze
+#
+# Works with both subcommands:
+#   ssw-analyze polar-vortex   --validations-config config/evaluate/ssw_feb2018.yml
+#   ssw-analyze ssw-lead-times --validations-config config/evaluate/ssw_feb2018.yml
+#
+# Entries with lead_days are used by ssw-lead-times (grouped by 'group').
+# All entries are used by polar-vortex.
+
+validations:
+
+  # T–10d: init ~2 Feb 2018, 180 fsteps (~7.5 days at 1h or longer at 24h)
+  bg03rub9_t10d:
+    id: gv6bxsfu
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 10
+    color: "#377eb8"
+
+  # T–15d: init ~28 Jan 2018, 180 fsteps
+  bg03rub9_t15d:
+    id: ioqlymze
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 15
+    color: "#e41a1c"

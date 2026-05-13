@@ -12,7 +12,8 @@ Usage::
 
 Subcommands
 -----------
-polar-vortex    Zonal mean u-wind at 60°N, SSW detection.
+polar-vortex      Zonal mean u-wind at 60°N, SSW detection.
+ssw-lead-times    SSW prediction skill vs lead time.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "subcommand",
-        choices=["polar-vortex"],
+        choices=["polar-vortex", "ssw-lead-times"],
         help="Analysis to run.",
     )
 
@@ -40,6 +41,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.subcommand == "polar-vortex":
         from weathergen.stratosphere.scripts.analyze_polar_vortex import main as _main
+
+        _main(remaining)
+    elif args.subcommand == "ssw-lead-times":
+        from weathergen.stratosphere.scripts.analyze_ssw_lead_times import main as _main
 
         _main(remaining)
     else:
