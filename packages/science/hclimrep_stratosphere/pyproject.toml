@@ -34,7 +34,7 @@ build-backend = "hatchling.build"
 packages = ["src/weathergen"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"data/level_listings.csv" = "weathergen/stratosphere/data/level_listings.csv"
+"src/weathergen/stratosphere/data/level_listings.csv" = "weathergen/stratosphere/data/level_listings.csv"
 
 [tool.ruff]
 extend = "../../../pyproject.toml"
