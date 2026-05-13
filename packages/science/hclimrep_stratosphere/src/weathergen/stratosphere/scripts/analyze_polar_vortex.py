@@ -47,12 +47,11 @@ from weathergen.stratosphere.io import (
     load_step,
     open_validation,
 )
-from weathergen.stratosphere.levels import build_level_map
 
 _logger = logging.getLogger(__name__)
 
 # Default zarr filename produced by WeatherGenerator inference
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zarr"
+_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Default channels to extract (priority order; first match per variable is used)
 _DEFAULT_U_CHANNELS = ["u_29", "u_30", "u_55"]  # ERA5ml
@@ -122,7 +121,9 @@ def extract_zonal_wind(
             for ch, ch_idx in available.items():
                 preds_by_ch[ch].append(float(np.mean(pred[lat_indices, ch_idx, 0])))
                 # target may have no ens dim in older stores — handle both shapes
-                tgt_slice = tgt[lat_indices, ch_idx, 0] if tgt.ndim == 3 else tgt[lat_indices, ch_idx]
+                tgt_slice = (
+                    tgt[lat_indices, ch_idx, 0] if tgt.ndim == 3 else tgt[lat_indices, ch_idx]
+                )
                 targets_by_ch[ch].append(float(np.mean(tgt_slice)))
             times_list.append(times[0])
 
@@ -179,15 +180,25 @@ def plot_zonal_wind_comparison(
         len(sorted_channels), 1, figsize=(14, 5 * len(sorted_channels)), squeeze=False
     )
 
-    for ax, ch in zip(axes.flatten(), sorted_channels):
+    for ax, ch in zip(axes.flatten(), sorted_channels, strict=False):
         for i, d in enumerate(data_list):
             if ch not in d["channels"]:
                 continue
             color = d.get("color") or fallback_colors[i % len(fallback_colors)]
             ch_data = d["channels"][ch]
             label = d["label"]
-            ax.plot(d["datetimes"], ch_data["predictions"], color=color, lw=2, label=f"{label} pred")
-            ax.plot(d["datetimes"], ch_data["targets"], color=color, lw=1.5, ls="--", alpha=0.8, label=f"{label} ERA5")
+            ax.plot(
+                d["datetimes"], ch_data["predictions"], color=color, lw=2, label=f"{label} pred"
+            )
+            ax.plot(
+                d["datetimes"],
+                ch_data["targets"],
+                color=color,
+                lw=1.5,
+                ls="--",
+                alpha=0.8,
+                label=f"{label} ERA5",
+            )
 
         ax.axhline(0, color="k", lw=0.8, ls=":", alpha=0.7, label="u = 0")
         all_dates = [dt for d in data_list for dt in d["datetimes"]]
