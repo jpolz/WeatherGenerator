@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "subcommand",
-        choices=["polar-vortex", "ssw-lead-times"],
+        choices=["polar-vortex", "ssw-lead-times", "polar-maps"],
         help="Analysis to run.",
     )
 
@@ -45,6 +45,10 @@ def main(argv: list[str] | None = None) -> None:
         _main(remaining)
     elif args.subcommand == "ssw-lead-times":
         from weathergen.stratosphere.scripts.analyze_ssw_lead_times import main as _main
+
+        _main(remaining)
+    elif args.subcommand == "polar-maps":
+        from weathergen.stratosphere.scripts.analyze_polar_maps import main as _main
 
         _main(remaining)
     else:
