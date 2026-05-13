@@ -11,11 +11,12 @@
 #   ./submit_ssw_validation.sh [options]
 #
 # Options:
-#   --dry-run        Print commands without submitting
-#   --model MODEL    Submit only for a specific model key
-#   --lead LEAD      Submit only for a specific lead (t15d, t10d, t5d, t0d)
-#   --event EVENT    Submit for a specific event (feb2018, jan2013, jan2019, jan2021)
-#   --help           Show this help message
+#   --dry-run             Print commands without submitting
+#   --model MODEL         Submit only for a specific model key
+#   --lead LEAD           Submit only for a specific lead (t15d, t10d, t5d, t0d)
+#   --event EVENT         Submit for a specific event (feb2018, jan2013, jan2019, jan2021)
+#   --stream-dir DIR      Override streams_directory passed to inference (whole dir, all streams)
+#   --help                Show this help message
 #
 # NOTE: weathergen_validate_jwb_batch.sh must use the current inference CLI:
 #   srun ... inference --from-run-id ${run_id} --options \
@@ -27,13 +28,18 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WG_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+mkdir -p "${SCRIPT_DIR}/logs"
+
 # Default settings
 DRY_RUN=false
 SPECIFIC_MODEL=""
 SPECIFIC_LEAD=""
 SPECIFIC_EVENT="feb2018"
+STREAM_DIR=""
 
-VALIDATION_SCRIPT="../WeatherGenerator-private/hpc/juwels_booster/jsc/weathergen_validate_jwb_jpstrat.sh"
+VALIDATION_SCRIPT="${WG_ROOT}/../WeatherGenerator-private/hpc/juwels_booster/jsc/weathergen_validate_jwb_jpstrat.sh"
 
 # Color codes for output
 GREEN='\033[0;32m'
@@ -45,10 +51,11 @@ NC='\033[0m'
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --dry-run)   DRY_RUN=true;          shift ;;
-        --model)     SPECIFIC_MODEL="$2";   shift 2 ;;
-        --lead)      SPECIFIC_LEAD="$2";    shift 2 ;;
-        --event)     SPECIFIC_EVENT="$2";   shift 2 ;;
+        --dry-run)    DRY_RUN=true;          shift ;;
+        --model)      SPECIFIC_MODEL="$2";   shift 2 ;;
+        --lead)       SPECIFIC_LEAD="$2";    shift 2 ;;
+        --event)      SPECIFIC_EVENT="$2";   shift 2 ;;
+        --stream-dir) STREAM_DIR="$2";       shift 2 ;;
         --help)
             grep "^#" "$0" | grep -v "^#!/" | sed 's/^# \?//'
             exit 0
@@ -128,8 +135,9 @@ submit_validation() {
     local sbatch_cmd=(
         sbatch
         --job-name="${job_name}"
-        --output="./logs/${job_name}.%j.out"
-        --error="./logs/${job_name}.%j.err"
+        --chdir "${WG_ROOT}"
+        --output="${SCRIPT_DIR}/logs/${job_name}.%j.out"
+        --error="${SCRIPT_DIR}/logs/${job_name}.%j.err"
         "${VALIDATION_SCRIPT}"
         --run_id     "${run_id}"
         --samples    "${SAMPLES}"
@@ -138,6 +146,7 @@ submit_validation() {
         --fsteps     "${fsteps}"
         --desc       "${desc}"
     )
+    [[ -n "${STREAM_DIR}" ]] && sbatch_cmd+=(--stream_dir "${STREAM_DIR}")
 
     if [[ "$DRY_RUN" == true ]]; then
         echo -e "${YELLOW}[DRY RUN] ${sbatch_cmd[*]}${NC}\n"
@@ -145,7 +154,7 @@ submit_validation() {
         local job_id
         job_id=$("${sbatch_cmd[@]}" | awk '{print $NF}')
         echo -e "${GREEN}✓ SLURM ID: ${job_id}${NC}\n"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') | ${job_id} | ${run_id} | ${model_name} | ${lead_key} | ${init_date} | ${fsteps} | ${desc}" >> validation_submissions.log
+        echo "$(date '+%Y-%m-%d %H:%M:%S') | ${job_id} | ${run_id} | ${model_name} | ${lead_key} | ${init_date} | ${fsteps} | ${desc}" >> "${SCRIPT_DIR}/validation_submissions.log"
         sleep 1
     fi
 }
@@ -199,7 +208,7 @@ else
     echo -e "${GREEN}SUBMISSION COMPLETE — submitted ${TOTAL_SUBMITTED} jobs${NC}"
     echo ""
     echo "Monitor:      squeue -u \$USER"
-    echo "Logs:         ./logs/"
-    echo "Submissions:  validation_submissions.log"
+    echo "Logs:         ${SCRIPT_DIR}/logs/"
+    echo "Submissions:  ${SCRIPT_DIR}/validation_submissions.log"
 fi
 echo -e "${BLUE}=======================================================${NC}"
