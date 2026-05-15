@@ -1,43 +1,41 @@
-# SSW February 2018 — validations config for ssw-analyze
+# SSW January 2021 — validations config for ssw-analyze
 #
 # Works with both subcommands:
-#   ssw-analyze polar-vortex   --validations-config config/evaluate/ssw_feb2018.yml
-#   ssw-analyze ssw-lead-times --validations-config config/evaluate/ssw_feb2018.yml
+#   ssw-analyze polar-vortex   --validations-config config/evaluate/ssw_jan2021.yml
+#   ssw-analyze ssw-lead-times --validations-config config/evaluate/ssw_jan2021.yml
 #
 # Entries with lead_days are used by ssw-lead-times (grouped by 'group').
 # All entries are used by polar-vortex.
 
 validations:
 
-
-
-  # T–0d: init ~12 Feb 2018, 180 fsteps
+  # T–0d: init ~5 Jan 2021, 180 fsteps
   bg03rub9_t0d:
-    id: p69gapsx
+    id: alev2bcx
     sample: 0
     group: "bg03rub9"
     lead_days: 0
     color: "#984ea3" # purple
-  
-  # T–5d: init ~7 Feb 2018, 180 fsteps
+
+  # T–5d: init ~31 Dec 2020, 180 fsteps
   bg03rub9_t5d:
-    id: dgnpqy4m
+    id: x8rhvg2p
     sample: 0
     group: "bg03rub9"
     lead_days: 5
     color: "#4daf4a" # green
 
-  # T–10d: init ~2 Feb 2018, 180 fsteps
+  # T–10d: init ~26 Dec 2020, 180 fsteps
   bg03rub9_t10d:
-    id: gv6bxsfu
+    id: obg19d6c
     sample: 0
     group: "bg03rub9"
     lead_days: 10
     color: "#377eb8" # blue
 
-  # T–15d: init ~28 Jan 2018, 180 fsteps
+  # T–15d: init ~21 Dec 2020, 180 fsteps
   bg03rub9_t15d:
-    id: ioqlymze
+    id: fg8recj4
     sample: 0
     group: "bg03rub9"
     lead_days: 15
