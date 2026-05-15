@@ -35,6 +35,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from weathergen.stratosphere.diagnostics import detect_ssw_reversal
 from weathergen.stratosphere.io import (
@@ -62,6 +63,76 @@ SSW_DATE = datetime(2018, 2, 12)
 
 
 # ---------------------------------------------------------------------------
+# Climatology
+# ---------------------------------------------------------------------------
+
+
+def load_climatology_zonal_mean(
+    climatology_path: Path,
+    channels: list[str],
+    datetimes: list[datetime],
+    target_latitude: float = 60.0,
+) -> dict[str, np.ndarray]:
+    """
+    Load zonal mean climatology at *target_latitude* for each datetime.
+
+    Matches by day-of-year + hour so the result is independent of forecast year.
+    Returns a dict mapping channel -> float array (one value per datetime).
+    """
+    import xarray as xr
+
+    _logger.info("Loading climatology from %s …", climatology_path)
+    clim = xr.open_zarr(climatology_path)
+
+    # Grid-point indices near target latitude
+    clim_coords = np.column_stack([clim.latitude.values, clim.longitude.values])
+    lat_indices = find_latitude_indices(clim_coords, target_latitude)
+
+    clim_channels = list(clim.channels.values)
+    available_chs = [ch for ch in channels if ch in clim_channels]
+    missing_chs = [ch for ch in channels if ch not in clim_channels]
+    if missing_chs:
+        _logger.warning("Channels not in climatology: %s", missing_chs)
+
+    # Match each datetime to climatology time by DOY + hour
+    clim_times = pd.to_datetime(clim.time.values)
+    clim_doys = clim_times.dayofyear.values
+    clim_hours = clim_times.hour.values
+
+    time_indices: list[int] = []
+    for dt in datetimes:
+        ts = pd.Timestamp(dt)
+        mask = (clim_doys == ts.dayofyear) & (clim_hours == ts.hour)
+        idx = np.where(mask)[0]
+        time_indices.append(int(idx[0]) if len(idx) > 0 else -1)
+
+    # Bulk-load: unique time steps × needed channels × lat-band points
+    unique_t = sorted({t for t in time_indices if t >= 0})
+    ch_indices = [clim_channels.index(ch) for ch in available_chs]
+
+    # clim.data shape: (time, channels, grid_points)
+    clim_block = (
+        clim.data
+        .isel(time=unique_t, channels=ch_indices)
+        .values[:, :, lat_indices]  # (n_t, n_ch, n_latpts)
+    )
+    zonal_means = clim_block.mean(axis=2)  # (n_t, n_ch)
+    t_pos = {t: i for i, t in enumerate(unique_t)}
+
+    result: dict[str, np.ndarray] = {}
+    for ci, ch in enumerate(available_chs):
+        vals = np.full(len(datetimes), np.nan, dtype=np.float64)
+        for ti, t in enumerate(time_indices):
+            if t >= 0:
+                vals[ti] = zonal_means[t_pos[t], ci]
+        result[ch] = vals
+    for ch in missing_chs:
+        result[ch] = np.full(len(datetimes), np.nan, dtype=np.float64)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Data extraction
 # ---------------------------------------------------------------------------
 
@@ -72,6 +143,7 @@ def extract_zonal_wind(
     channels_override: list[str] | None = None,
     sample: int = 0,
     target_latitude: float = 60.0,
+    climatology_path: Path | None = None,
 ) -> dict[str, Any] | None:
     """
     Extract zonal mean u-wind at *target_latitude* from a validation zarr store.
@@ -82,11 +154,13 @@ def extract_zonal_wind(
         channels_override: Explicit list of channel names. Auto-detected when ``None``.
         sample:            Ensemble member index (default 0).
         target_latitude:   Latitude for zonal mean (default 60°N).
+        climatology_path:  If provided, subtract the DOY climatology mean to
+                           return anomalies instead of absolute values.
 
     Returns:
         Dict with keys ``label``, ``channels`` (dict per channel with
-        ``predictions`` / ``targets``), ``times``, ``datetimes``, ``latitude``;
-        or ``None`` on failure.
+        ``predictions`` / ``targets``), ``times``, ``datetimes``, ``latitude``,
+        ``is_anomaly``; or ``None`` on failure.
     """
     _logger.info("Extracting zonal wind for %s (sample %d) …", label, sample)
 
@@ -132,14 +206,26 @@ def extract_zonal_wind(
 
     _logger.info("  %d forecast steps, %s → %s", len(steps), datetimes[0], datetimes[-1])
 
+    preds_np = {ch: np.array(preds_by_ch[ch]) for ch in available}
+    targets_np = {ch: np.array(targets_by_ch[ch]) for ch in available}
+
+    if climatology_path is not None:
+        clim_means = load_climatology_zonal_mean(
+            climatology_path, list(available.keys()), datetimes, target_latitude
+        )
+        for ch in available:
+            preds_np[ch] = preds_np[ch] - clim_means[ch]
+            targets_np[ch] = targets_np[ch] - clim_means[ch]
+
     return {
         "label": label,
         "sample": sample,
         "color": None,  # filled by caller
+        "is_anomaly": climatology_path is not None,
         "channels": {
             ch: {
-                "predictions": np.array(preds_by_ch[ch]),
-                "targets": np.array(targets_by_ch[ch]),
+                "predictions": preds_np[ch],
+                "targets": targets_np[ch],
             }
             for ch in available
         },
@@ -224,8 +310,11 @@ def plot_zonal_wind_comparison(
         if all_dates and min(all_dates) <= ssw_date <= max(all_dates):
             ax.axvline(ssw_date, color="red", ls="-.", lw=1.5, alpha=0.7, label="SSW date")
 
-        ax.set_ylabel("u-wind (m/s)")
-        ax.set_title(f"Zonal mean u at 60°N — {ch}", fontweight="bold")
+        is_anomaly = any(d.get("is_anomaly") for d in data_list)
+        ylabel = "u-wind anomaly (m/s)" if is_anomaly else "u-wind (m/s)"
+        title_suffix = " anomaly" if is_anomaly else ""
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"Zonal mean u{title_suffix} at 60°N — {ch}", fontweight="bold")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=9)
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
@@ -266,6 +355,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--validations-config", type=Path, default=None)
     parser.add_argument("--channels", nargs="+", default=None)
     parser.add_argument("--latitude", type=float, default=60.0)
+    parser.add_argument("--climatology", type=Path, default=None,
+                        help="Path to climatology zarr for anomaly computation.")
     args = parser.parse_args(argv)
 
     run_specs = _build_run_specs(args)
@@ -283,6 +374,7 @@ def main(argv: list[str] | None = None) -> None:
             channels_override=args.channels,
             sample=sample,
             target_latitude=args.latitude,
+            climatology_path=args.climatology,
         )
         if data is None:
             continue

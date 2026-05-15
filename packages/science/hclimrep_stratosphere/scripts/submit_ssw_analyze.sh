@@ -20,6 +20,7 @@
 #   --config PATH        Validations config YAML  [default: config/evaluate/ssw_feb2018.yml]
 #   --data-dir DIR       Zarr results directory   [default: results]
 #   --output-dir DIR     Plot output directory    [default: plots/ssw_analyze]
+#   --climatology PATH   Climatology zarr for anomaly computation (optional)
 #   --run SUBCMD...      Subcommands to run       [default: all four]
 #   --polar-vortex-extra Extra args for polar-vortex (e.g. '--channels u_29 u_30')
 #   --dry-run            Print commands, do not execute
@@ -44,6 +45,7 @@ set -euo pipefail
 CONFIG="config/evaluate/ssw_feb2018.yml"
 DATA_DIR="results"
 OUTPUT_DIR="plots/ssw_analyze"
+CLIMATOLOGY=""
 DRY_RUN=false
 POLAR_VORTEX_EXTRA=""
 
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --config)           CONFIG="$2";            shift 2 ;;
         --data-dir)         DATA_DIR="$2";           shift 2 ;;
         --output-dir)       OUTPUT_DIR="$2";         shift 2 ;;
+        --climatology)      CLIMATOLOGY="$2";        shift 2 ;;
         --polar-vortex-extra) POLAR_VORTEX_EXTRA="$2"; shift 2 ;;
         --run)
             shift
@@ -146,6 +149,7 @@ echo "  ssw-analyze batch run"
 echo "  Config:     ${CONFIG}"
 echo "  Data dir:   ${DATA_DIR}"
 echo "  Output dir: ${OUTPUT_DIR}"
+echo "  Climatology:${CLIMATOLOGY:-none}"
 echo "  Commands:   ${RUN_CMDS[*]}"
 echo "  Dry run:    ${DRY_RUN}"
 echo "======================================================="
@@ -154,8 +158,10 @@ date
 for subcmd in "${RUN_CMDS[@]}"; do
     case "${subcmd}" in
         polar-vortex)
+            pv_args=()
+            [[ -n "${CLIMATOLOGY:-}" ]] && pv_args+=(--climatology "${CLIMATOLOGY}")
             # shellcheck disable=SC2086
-            run_cmd polar-vortex ${POLAR_VORTEX_EXTRA} ;;
+            run_cmd polar-vortex "${pv_args[@]}" ${POLAR_VORTEX_EXTRA} ;;
         ssw-lead-times)
             run_cmd ssw-lead-times ;;
         polar-maps)
