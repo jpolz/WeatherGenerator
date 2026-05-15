@@ -447,9 +447,18 @@ def create_polar_animation(
         fig, update, frames=len(common_times), interval=1000 // fps, blit=False
     )
 
-    output_file = output_dir / f"polar_map_animation_{var_channel}.mp4"
-    _logger.info("Saving animation to %s…", output_file)
-    anim.save(output_file, writer="ffmpeg", fps=fps, dpi=110)
+    if animation.FFMpegWriter.isAvailable():
+        output_file = output_dir / f"polar_map_animation_{var_channel}.mp4"
+        _logger.info("Saving animation (ffmpeg) to %s…", output_file)
+        anim.save(output_file, writer="ffmpeg", fps=fps, dpi=110)
+    else:
+        _logger.warning(
+            "ffmpeg not available — saving as GIF instead (larger file, lower quality)"
+        )
+        output_file = output_dir / f"polar_map_animation_{var_channel}.gif"
+        _logger.info("Saving animation (Pillow/GIF) to %s…", output_file)
+        anim.save(output_file, writer="pillow", fps=fps, dpi=80)
+
     _logger.info("Saved: %s", output_file)
     plt.close()
 
