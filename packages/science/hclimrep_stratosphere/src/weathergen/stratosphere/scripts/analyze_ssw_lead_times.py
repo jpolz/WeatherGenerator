@@ -22,7 +22,7 @@ Usage::
         --validations-config eval_config/ssw_lead_times.yml \\
         --data-dir /path/to/validation/data \\
         --output-dir plots/lead_time \\
-        --channel u_30
+        --channel u_29
 """
 
 from __future__ import annotations
@@ -458,7 +458,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--output-dir", type=Path, default=Path("plots/lead_time"))
     parser.add_argument(
-        "--channel", default="u_30", help="Channel to analyse (default: u_30 ≈ 11 hPa)"
+        "--channel", default="u_29", help="Channel to analyse (default: u_29 ≈ 10 hPa)"
     )
     parser.add_argument("--latitude", type=float, default=60.0)
     args = parser.parse_args(argv)

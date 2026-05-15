@@ -617,8 +617,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--surface-var",
         type=str,
-        default="z_500",
-        help="Surface/tropospheric variable for impact plot (default: z_500).",
+        default="u_29",
+        help="Channel for the surface/lower-atmosphere impact time series (default: u_29 ≈ 10 hPa ERA5ml).",
     )
     parser.add_argument(
         "--fps", type=int, default=10, help="Animation frames per second."
