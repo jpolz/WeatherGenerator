@@ -142,6 +142,9 @@ def extract_vertical_profile(
         coords = get_coords(zio, stream, sample)
 
         level_map = build_level_map("u", channels)
+        # Exclude levels with pressure ≤ 0 (top-of-atmosphere levels in L137)
+        # to avoid log(0) on the pressure axis.
+        level_map = {ch: p for ch, p in level_map.items() if p > 0.1}
         if not level_map:
             _logger.warning("%s: no u-wind channels found in ERA5ml — skipping", label)
             return None
@@ -224,6 +227,9 @@ def extract_temperature_vertical_profile(
         coords = get_coords(zio, stream, sample)
 
         level_map = build_level_map("t", channels)
+        # Exclude levels with pressure ≤ 0 (top-of-atmosphere levels in L137)
+        # to avoid log(0) on the pressure axis.
+        level_map = {ch: p for ch, p in level_map.items() if p > 0.1}
         if not level_map:
             _logger.warning(
                 "%s: no temperature channels found in ERA5ml — skipping", label

@@ -78,9 +78,13 @@ SSW_DATE = datetime(2018, 2, 12)
 def _stream_for_variable(zio: Any, variable: str) -> str | None:
     """Return the appropriate stream name for *variable*, or ``None`` if absent.
 
-    Pressure-level variables (``z_500``, ``t_850``, etc.) live in ``ERA5pl``;
-    surface variables (``2t``, ``10u``, ``10v``) and model-level variables
-    live in ``ERA5ml``.
+    ERA5pl pressure-level variables (``z_500``, ``t_850``, etc.) live in
+    ``ERA5pl``; surface variables (``2t``, ``10u``, ``10v``) and model-level
+    variables (``u_29``, ``t_55``, etc.) live in ``ERA5ml``.
+
+    The preferred stream is tried first; if absent, the other stream is tried
+    so that ERA5ml-only validations still work when an ERA5pl variable is
+    requested (e.g. ``u_29`` misidentified as pressure-level).
     """
     need_pl = variable.startswith(("z_", "t_", "u_", "v_")) and variable not in (
         "2t",
@@ -88,7 +92,18 @@ def _stream_for_variable(zio: Any, variable: str) -> str | None:
         "10v",
     )
     prefer = "ERA5pl" if need_pl else "ERA5ml"
-    return prefer if prefer in zio.streams else None
+    fallback = "ERA5ml" if need_pl else "ERA5pl"
+    if prefer in zio.streams:
+        return prefer
+    if fallback in zio.streams:
+        _logger.debug(
+            "'%s' preferred stream %s absent; falling back to %s",
+            variable,
+            prefer,
+            fallback,
+        )
+        return fallback
+    return None
 
 
 # ---------------------------------------------------------------------------
