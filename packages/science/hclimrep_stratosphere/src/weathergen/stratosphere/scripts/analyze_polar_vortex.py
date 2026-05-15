@@ -154,13 +154,34 @@ def extract_zonal_wind(
 # ---------------------------------------------------------------------------
 
 
+def _merge_targets(data_list: list[dict[str, Any]], ch: str) -> tuple[list[datetime], list[float]]:
+    """
+    Merge ERA5 target time series from multiple runs into one.
+
+    Runs share the same underlying ERA5 data where their time windows overlap,
+    so duplicates are simply deduplicated (first-seen value is kept).
+    """
+    seen: dict[datetime, float] = {}
+    for d in data_list:
+        if ch not in d["channels"]:
+            continue
+        for dt, val in zip(d["datetimes"], d["channels"][ch]["targets"], strict=False):
+            if dt not in seen:
+                seen[dt] = val
+    if not seen:
+        return [], []
+    sorted_items = sorted(seen.items())
+    return [t for t, _ in sorted_items], [v for _, v in sorted_items]
+
+
 def plot_zonal_wind_comparison(
     data_list: list[dict[str, Any]],
     output_dir: Path,
     ssw_date: datetime = SSW_DATE,
 ) -> None:
     """
-    Plot zonal mean u-wind time series: one panel per pressure level.
+    Plot zonal mean u-wind time series: one panel with all forecasts and a
+    single merged ERA5 target line.
 
     Args:
         data_list:  List of dicts returned by :func:`extract_zonal_wind`.
@@ -176,31 +197,28 @@ def plot_zonal_wind_comparison(
 
     fallback_colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628"]
 
-    fig, axes = plt.subplots(
-        len(sorted_channels), 1, figsize=(14, 5 * len(sorted_channels)), squeeze=False
-    )
+    for ch in sorted_channels:
+        fig, ax = plt.subplots(figsize=(14, 5))
 
-    for ax, ch in zip(axes.flatten(), sorted_channels, strict=False):
+        # One prediction line per run
         for i, d in enumerate(data_list):
             if ch not in d["channels"]:
                 continue
             color = d.get("color") or fallback_colors[i % len(fallback_colors)]
-            ch_data = d["channels"][ch]
-            label = d["label"]
-            ax.plot(
-                d["datetimes"], ch_data["predictions"], color=color, lw=2, label=f"{label} pred"
-            )
             ax.plot(
                 d["datetimes"],
-                ch_data["targets"],
+                d["channels"][ch]["predictions"],
                 color=color,
-                lw=1.5,
-                ls="--",
-                alpha=0.8,
-                label=f"{label} ERA5",
+                lw=2,
+                label=d["label"],
             )
 
-        ax.axhline(0, color="k", lw=0.8, ls=":", alpha=0.7, label="u = 0")
+        # Single merged ERA5 target line
+        tgt_times, tgt_vals = _merge_targets(data_list, ch)
+        if tgt_times:
+            ax.plot(tgt_times, tgt_vals, color="k", lw=2, ls="--", label="ERA5")
+
+        ax.axhline(0, color="k", lw=0.8, ls=":", alpha=0.7)
         all_dates = [dt for d in data_list for dt in d["datetimes"]]
         if all_dates and min(all_dates) <= ssw_date <= max(all_dates):
             ax.axvline(ssw_date, color="red", ls="-.", lw=1.5, alpha=0.7, label="SSW date")
@@ -208,14 +226,15 @@ def plot_zonal_wind_comparison(
         ax.set_ylabel("u-wind (m/s)")
         ax.set_title(f"Zonal mean u at 60°N — {ch}", fontweight="bold")
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=9)
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
-    plt.tight_layout()
-    out = output_dir / "zonal_wind_60N_by_level.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    _logger.info("Saved %s", out)
+        plt.tight_layout()
+        event_tag = ssw_date.strftime("%b%Y").lower()
+        out = output_dir / f"zonal_wind_60N_{ch}_{event_tag}.png"
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        _logger.info("Saved %s", out)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +257,7 @@ def _build_run_specs(
 
 
 def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--output-dir", type=Path, default=Path("plots/polar_vortex"))
