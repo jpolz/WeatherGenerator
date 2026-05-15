@@ -178,6 +178,7 @@ def plot_zonal_wind_comparison(
     data_list: list[dict[str, Any]],
     output_dir: Path,
     ssw_date: datetime = SSW_DATE,
+    event_tag: str = "",
 ) -> None:
     """
     Plot zonal mean u-wind time series: one panel with all forecasts and a
@@ -230,8 +231,8 @@ def plot_zonal_wind_comparison(
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
         plt.tight_layout()
-        event_tag = ssw_date.strftime("%b%Y").lower()
-        out = output_dir / f"zonal_wind_60N_{ch}_{event_tag}.png"
+        tag = event_tag or ssw_date.strftime("%b%Y").lower()
+        out = output_dir / f"zonal_wind_60N_{ch}_{tag}.png"
         fig.savefig(out, dpi=150, bbox_inches="tight")
         plt.close(fig)
         _logger.info("Saved %s", out)
@@ -294,7 +295,12 @@ def main(argv: list[str] | None = None) -> None:
             _logger.info("%s / %s  pred=%s  target=%s", label, ch, pred_ssw, tgt_ssw)
 
     if all_data:
-        plot_zonal_wind_comparison(all_data, args.output_dir)
+        event_tag = ""
+        if args.validations_config is not None:
+            stem = args.validations_config.stem  # e.g. "ssw_feb2018"
+            parts = stem.split("_", 1)
+            event_tag = parts[1] if len(parts) == 2 else stem
+        plot_zonal_wind_comparison(all_data, args.output_dir, event_tag=event_tag)
 
 
 if __name__ == "__main__":
