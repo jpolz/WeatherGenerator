@@ -75,6 +75,7 @@ done
 # Models: key → "run_id label timestep"
 declare -A MODELS=(
     ["bg03rub9"]="bg03rub9 strato_ft 6h"
+    ["hro273du"]="hro273du strato_ft 6h + pl decoder"
 )
 
 # SSW central warming dates
