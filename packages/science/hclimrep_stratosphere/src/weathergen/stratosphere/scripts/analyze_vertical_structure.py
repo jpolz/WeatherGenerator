@@ -40,6 +40,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.colors import TwoSlopeNorm
 from weathergen.stratosphere.config import load_validations_config
 from weathergen.stratosphere.io import (
@@ -191,6 +192,7 @@ def extract_vertical_profile(
         "datetimes": datetimes,
         "pressures": pressures,
         "channels": sorted_channels,
+        "lat_indices": lat_indices,
     }
 
 
@@ -286,7 +288,72 @@ def extract_temperature_vertical_profile(
         "datetimes": datetimes,
         "pressures": pressures,
         "channels": sorted_channels,
+        "lat_indices": polar_indices,
+        "weights": weights,
     }
+
+
+# ---------------------------------------------------------------------------
+# Climatology
+# ---------------------------------------------------------------------------
+
+
+def load_climatology_vertical_mean(
+    climatology_path: Path,
+    sorted_channels: list[str],
+    pressures: np.ndarray,
+    datetimes: list[datetime],
+    lat_indices: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Return climatological mean as a ``(time, level)`` array.
+
+    Each row is matched to the climatology by DOY + hour.
+    If *weights* is provided, a weighted mean over *lat_indices* is computed
+    (polar-cap temperature); otherwise a simple mean is used (zonal wind).
+    """
+    import xarray as xr
+
+    _logger.info("Loading vertical climatology from %s …", climatology_path)
+    clim = xr.open_zarr(climatology_path)
+
+    clim_channels = list(clim.channels.values)
+    ch_indices = [clim_channels.index(ch) for ch in sorted_channels if ch in clim_channels]
+    missing = [ch for ch in sorted_channels if ch not in clim_channels]
+    if missing:
+        _logger.warning("Channels not in climatology: %s", missing)
+
+    clim_times = pd.to_datetime(clim.time.values)
+    clim_doys = clim_times.dayofyear.values
+    clim_hours = clim_times.hour.values
+
+    time_indices: list[int] = []
+    for dt in datetimes:
+        ts = pd.Timestamp(dt)
+        mask = (clim_doys == ts.dayofyear) & (clim_hours == ts.hour)
+        idx = np.where(mask)[0]
+        time_indices.append(int(idx[0]) if len(idx) > 0 else -1)
+
+    unique_t = sorted({t for t in time_indices if t >= 0})
+    # clim.data: (time, channels, grid_points)
+    clim_block = (
+        clim.data
+        .isel(time=unique_t, channels=ch_indices)
+        .values[:, :, lat_indices]  # (n_t, n_ch, n_pts)
+    )
+    if weights is not None:
+        # weighted mean over grid points
+        zonal = (clim_block * weights[None, None, :]).sum(axis=2)  # (n_t, n_ch)
+    else:
+        zonal = clim_block.mean(axis=2)  # (n_t, n_ch)
+
+    t_pos = {t: i for i, t in enumerate(unique_t)}
+    result = np.full((len(datetimes), len(sorted_channels)), np.nan, dtype=np.float64)
+    for ti, t in enumerate(time_indices):
+        if t >= 0:
+            result[ti, :len(ch_indices)] = zonal[t_pos[t], :]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -390,11 +457,35 @@ def _contourf_panel(
 # ---------------------------------------------------------------------------
 
 
+def _compute_anomalies(
+    data: np.ndarray,
+    datetimes: list[datetime],
+    pressures: np.ndarray,
+    sorted_channels: list[str],
+    lat_indices: np.ndarray,
+    climatology_path: Path | None,
+    weights: np.ndarray | None = None,
+    reference_dict: dict[str, Any] | None = None,
+) -> np.ndarray:
+    """Subtract climatology (DOY+hour) if available, else fall back to initial-period mean."""
+    if climatology_path is not None:
+        clim_mean = load_climatology_vertical_mean(
+            climatology_path, sorted_channels, pressures, datetimes, lat_indices, weights
+        )
+        return data - clim_mean
+    ref_data = reference_dict["data"] if reference_dict else None
+    ref_pressures = reference_dict["pressures"] if reference_dict else None
+    return calculate_anomalies(
+        data, ref_data, data_pressures=pressures, reference_pressures=ref_pressures
+    )
+
+
 def plot_vertical_structure(
     data_list: list[dict[str, Any]],
     output_dir: Path,
     reference_dict: dict[str, Any] | None = None,
     ssw_date: datetime = SSW_DATE,
+    climatology_path: Path | None = None,
 ) -> None:
     """
     Save a 2×2 panel per experiment showing absolute and anomaly zonal wind.
@@ -403,27 +494,21 @@ def plot_vertical_structure(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ref_data = reference_dict["data"] if reference_dict else None
-    ref_pressures = reference_dict["pressures"] if reference_dict else None
-
     for data in data_list:
         label = data["label"]
         datetimes = data["datetimes"]
         pressures = data["pressures"]
         predictions = data["predictions"]
         targets = data["targets"]
+        lat_indices = data["lat_indices"]
 
-        pred_anom = calculate_anomalies(
-            predictions,
-            ref_data,
-            data_pressures=pressures,
-            reference_pressures=ref_pressures,
+        pred_anom = _compute_anomalies(
+            predictions, datetimes, pressures, data["channels"],
+            lat_indices, climatology_path, reference_dict=reference_dict,
         )
-        tgt_anom = calculate_anomalies(
-            targets,
-            ref_data,
-            data_pressures=pressures,
-            reference_pressures=ref_pressures,
+        tgt_anom = _compute_anomalies(
+            targets, datetimes, pressures, data["channels"],
+            lat_indices, climatology_path, reference_dict=reference_dict,
         )
 
         T, P = np.meshgrid(np.arange(len(datetimes)), pressures)
@@ -490,6 +575,7 @@ def plot_downward_propagation(
     output_dir: Path,
     reference_dict: dict[str, Any] | None = None,
     ssw_date: datetime = SSW_DATE,
+    climatology_path: Path | None = None,
 ) -> None:
     """
     Save a multi-experiment comparison of zonal wind anomaly cross-sections.
@@ -497,9 +583,6 @@ def plot_downward_propagation(
     Layout: one row per experiment, two columns (Prediction | Target).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    ref_data = reference_dict["data"] if reference_dict else None
-    ref_pressures = reference_dict["pressures"] if reference_dict else None
 
     n_exps = len(data_list)
     fig, axes = plt.subplots(n_exps, 2, figsize=(16, 6 * n_exps), squeeze=False)
@@ -511,18 +594,15 @@ def plot_downward_propagation(
         label = data["label"]
         datetimes = data["datetimes"]
         pressures = data["pressures"]
+        lat_indices = data["lat_indices"]
 
-        pred_anom = calculate_anomalies(
-            data["predictions"],
-            ref_data,
-            data_pressures=pressures,
-            reference_pressures=ref_pressures,
+        pred_anom = _compute_anomalies(
+            data["predictions"], datetimes, pressures, data["channels"],
+            lat_indices, climatology_path, reference_dict=reference_dict,
         )
-        tgt_anom = calculate_anomalies(
-            data["targets"],
-            ref_data,
-            data_pressures=pressures,
-            reference_pressures=ref_pressures,
+        tgt_anom = _compute_anomalies(
+            data["targets"], datetimes, pressures, data["channels"],
+            lat_indices, climatology_path, reference_dict=reference_dict,
         )
 
         T, P = np.meshgrid(np.arange(len(datetimes)), pressures)
@@ -561,14 +641,12 @@ def plot_temperature_vertical_structure(
     output_dir: Path,
     reference_dict: dict[str, Any] | None = None,
     ssw_date: datetime = SSW_DATE,
+    climatology_path: Path | None = None,
 ) -> None:
     """
     Save a 2×2 panel per experiment showing absolute and anomaly polar-cap temperature.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    ref_data = reference_dict["data"] if reference_dict else None
-    ref_pressures = reference_dict["pressures"] if reference_dict else None
 
     for data in data_list:
         label = data["label"]
@@ -576,18 +654,16 @@ def plot_temperature_vertical_structure(
         pressures = data["pressures"]
         predictions = data["predictions"]
         targets = data["targets"]
+        polar_indices = data["lat_indices"]
+        weights = data.get("weights")
 
-        pred_anom = calculate_anomalies(
-            predictions,
-            ref_data,
-            data_pressures=pressures,
-            reference_pressures=ref_pressures,
+        pred_anom = _compute_anomalies(
+            predictions, datetimes, pressures, data["channels"],
+            polar_indices, climatology_path, weights=weights, reference_dict=reference_dict,
         )
-        tgt_anom = calculate_anomalies(
-            targets,
-            ref_data,
-            data_pressures=pressures,
-            reference_pressures=ref_pressures,
+        tgt_anom = _compute_anomalies(
+            targets, datetimes, pressures, data["channels"],
+            polar_indices, climatology_path, weights=weights, reference_dict=reference_dict,
         )
 
         T, P = np.meshgrid(np.arange(len(datetimes)), pressures)
@@ -708,6 +784,13 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Skip polar-cap temperature profiles.",
     )
+    parser.add_argument(
+        "--climatology",
+        type=Path,
+        default=None,
+        help="Path to climatology zarr for DOY+hour anomaly computation. "
+             "When omitted, falls back to the initial-period mean.",
+    )
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -781,14 +864,17 @@ def main(argv: list[str] | None = None) -> None:
 
     # Generate plots
     if wind_data:
-        plot_vertical_structure(wind_data, args.output_dir, wind_reference)
+        plot_vertical_structure(wind_data, args.output_dir, wind_reference,
+                                climatology_path=args.climatology)
         if len(wind_data) > 1:
-            plot_downward_propagation(wind_data, args.output_dir, wind_reference)
+            plot_downward_propagation(wind_data, args.output_dir, wind_reference,
+                                      climatology_path=args.climatology)
     elif not args.skip_wind:
         _logger.warning("No wind data extracted.")
 
     if temp_data:
-        plot_temperature_vertical_structure(temp_data, args.output_dir, temp_reference)
+        plot_temperature_vertical_structure(temp_data, args.output_dir, temp_reference,
+                                            climatology_path=args.climatology)
     elif not args.skip_temperature:
         _logger.warning("No temperature data extracted.")
 

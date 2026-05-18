@@ -167,7 +167,9 @@ for subcmd in "${RUN_CMDS[@]}"; do
         polar-maps)
             run_cmd polar-maps --model-level 29 --fps 10 --skip-animation ;;
         vertical-structure)
-            run_cmd vertical-structure ;;
+            vs_args=()
+            [[ -n "${CLIMATOLOGY:-}" ]] && vs_args+=(--climatology "${CLIMATOLOGY}")
+            run_cmd vertical-structure "${vs_args[@]}" ;;
         *)
             echo "WARNING: unknown subcommand '${subcmd}', skipping" >&2 ;;
     esac
