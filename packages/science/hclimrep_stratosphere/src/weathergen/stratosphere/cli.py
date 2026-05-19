@@ -12,10 +12,12 @@ Usage::
 
 Subcommands
 -----------
-polar-vortex         Zonal mean u-wind at 60°N, SSW detection.
-ssw-lead-times       SSW prediction skill vs lead time.
-polar-maps           Polar stereographic animations and surface impact.
-vertical-structure   Height–time cross-sections of zonal wind and temperature.
+polar-vortex             Zonal mean u-wind at 60°N, SSW detection.
+ssw-lead-times           SSW prediction skill vs lead time.
+polar-maps               Polar stereographic animations and surface impact.
+vertical-structure       Height–time cross-sections of zonal wind and temperature.
+polar-cap-temperature    Area-weighted polar cap temperature by pressure level.
+qg-tem                   QG-TEM diagnostics: EP flux, divergence, residual circulation.
 """
 
 from __future__ import annotations
@@ -34,7 +36,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "subcommand",
-        choices=["polar-vortex", "ssw-lead-times", "polar-maps", "vertical-structure"],
+        choices=[
+            "polar-vortex",
+            "ssw-lead-times",
+            "polar-maps",
+            "vertical-structure",
+            "polar-cap-temperature",
+            "qg-tem",
+        ],
         help="Analysis to run.",
     )
 
@@ -57,6 +66,16 @@ def main(argv: list[str] | None = None) -> None:
         from weathergen.stratosphere.scripts.analyze_vertical_structure import (
             main as _main,
         )
+
+        _main(remaining)
+    elif args.subcommand == "polar-cap-temperature":
+        from weathergen.stratosphere.scripts.analyze_polar_cap_temperature import (
+            main as _main,
+        )
+
+        _main(remaining)
+    elif args.subcommand == "qg-tem":
+        from weathergen.stratosphere.scripts.analyze_qg_tem import main as _main
 
         _main(remaining)
     else:

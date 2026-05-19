@@ -11,10 +11,12 @@
 #       [--run SUBCOMMAND [SUBCOMMAND...]] [--dry-run] [--devel]
 #
 # Subcommands (default: all):
-#   polar-vortex         Zonal mean u-wind at 60°N, SSW detection
-#   ssw-lead-times       Prediction skill vs lead time
-#   polar-maps           Polar stereographic animations + surface impact
-#   vertical-structure   Height-time cross-sections
+#   polar-vortex             Zonal mean u-wind at 60°N, SSW detection
+#   ssw-lead-times           Prediction skill vs lead time
+#   polar-maps               Polar stereographic animations + surface impact
+#   vertical-structure       Height-time cross-sections
+#   polar-cap-temperature    Area-weighted polar cap temperature by level
+#   qg-tem                   QG-TEM diagnostics: EP flux, divergence, residual circulation
 #
 # Options:
 #   --config PATH        Validations config YAML  [default: config/evaluate/ssw_feb2018.yml]
@@ -81,7 +83,7 @@ done
 
 # Default: run all four subcommands
 if [[ ${#RUN_CMDS[@]} -eq 0 ]]; then
-    RUN_CMDS=(polar-vortex ssw-lead-times polar-maps vertical-structure)
+    RUN_CMDS=(polar-vortex ssw-lead-times polar-maps vertical-structure polar-cap-temperature qg-tem)
 fi
 
 # ---------------------------------------------------------------------------
@@ -170,6 +172,10 @@ for subcmd in "${RUN_CMDS[@]}"; do
             vs_args=()
             [[ -n "${CLIMATOLOGY:-}" ]] && vs_args+=(--climatology "${CLIMATOLOGY}")
             run_cmd vertical-structure "${vs_args[@]}" ;;
+        polar-cap-temperature)
+            run_cmd polar-cap-temperature ;;
+        qg-tem)
+            run_cmd qg-tem ;;
         *)
             echo "WARNING: unknown subcommand '${subcmd}', skipping" >&2 ;;
     esac
