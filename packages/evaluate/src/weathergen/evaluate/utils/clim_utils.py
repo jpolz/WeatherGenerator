@@ -156,11 +156,14 @@ def align_clim_data(
         has_sample_dim = "sample" in target_data.dims
 
         for sample in tqdm(samples, f"Aligning climatology for forecast step {fstep}"):
-            sel_key = "sample" if has_sample_dim else "ipoint"
-            sel_val = sample if has_sample_dim else (target_data.sample.values == sample)
-            sel_mask = {sel_key: sel_val}
+            if has_sample_dim:
+                sel_mask = {"sample": sample}
+                sample_data = target_data.sel(sel_mask)
+            else:
+                sel_mask = {}
+                sample_data = target_data
 
-            timestamp = np.unique(target_data.sel(sel_mask).valid_time.values)[0]
+            timestamp = np.unique(sample_data.valid_time.values)[0]
             matching_time_idx = match_climatology_time(timestamp, clim_data)
 
             if matching_time_idx is None:
@@ -180,8 +183,8 @@ def align_clim_data(
                     .transpose("grid_points", "channels")  # dimensions specific to anemoi
                 )
 
-            target_lats = target_data.loc[sel_mask].lat.values
-            target_lons = target_data.loc[sel_mask].lon.values
+            target_lats = sample_data.lat.values
+            target_lons = sample_data.lon.values
             if (
                 cached_clim_indices is not None
                 and np.array_equal(target_lats, cached_target_lats)
