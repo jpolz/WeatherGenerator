@@ -49,6 +49,77 @@ def load_level_pressures() -> dict[int, float]:
     return pressures
 
 
+@functools.lru_cache(maxsize=1)
+def load_full_level_pressures() -> dict[int, float]:
+    """
+    Load all model level → full-level pressure (hPa) mappings.
+
+    Full-level pressures (``pf [hPa]`` column) are the pressure at the centre
+    of each model layer — i.e. where u, v, T fields are defined.  Use these
+    for TEM and other computations that need the pressure at the field level.
+
+    Level 0 and any row with a non-numeric ``pf [hPa]`` value are skipped.
+
+    Cached after first call.
+
+    Returns:
+        Dict mapping model level number to full-level pressure in hPa.
+    """
+    pressures: dict[int, float] = {}
+    with open(_CSV_PATH, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                pressures[int(row["n"])] = float(row["pf [hPa]"])
+            except (ValueError, KeyError):
+                pass  # skip level 0 (value is "-") and any malformed rows
+    return pressures
+
+
+def get_full_level_pressure(level: int) -> float:
+    """
+    Return full-level pressure in hPa for a given model level.
+
+    Raises:
+        ValueError: If the level is not in the CSV or has no valid pf value.
+    """
+    pressures = load_full_level_pressures()
+    if level not in pressures:
+        raise ValueError(
+            f"Model level {level} not found in level_listings.csv (pf column). "
+            f"Valid range: {min(pressures)}–{max(pressures)}."
+        )
+    return pressures[level]
+
+
+def build_full_level_map(variable: str, channels: list[str]) -> dict[str, float]:
+    """
+    Like :func:`build_level_map` but uses full-level pressure (``pf [hPa]``).
+
+    Use this when you need the pressure at which fields are defined (TEM, EP flux,
+    vertical derivatives), rather than the half-level interface pressure.
+    """
+    pressures = load_full_level_pressures()
+    result: dict[str, float] = {}
+    prefix = f"{variable}_"
+    for ch in channels:
+        if not ch.startswith(prefix):
+            continue
+        parts = ch.split("_", 1)
+        if len(parts) != 2:
+            continue
+        try:
+            level = int(parts[1])
+        except ValueError:
+            continue
+        if level >= 150:
+            # ERA5pl channel: integer suffix is already pressure in hPa
+            result[ch] = float(level)
+        elif level in pressures:
+            result[ch] = pressures[level]
+    return result
+
+
 def get_level_pressure(level: int) -> float:
     """
     Return half-level pressure in hPa for a given model level.
