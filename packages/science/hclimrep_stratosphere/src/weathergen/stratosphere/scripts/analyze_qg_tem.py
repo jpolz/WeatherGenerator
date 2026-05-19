@@ -11,9 +11,9 @@ Computes the QG-TEM diagnostics from u, v, T fields on stratospheric model
 levels (IFS L137 levels where B_k ≈ 0, i.e. pure pressure levels):
 
   * Potential temperature  θ = T · (p₀/p)^κ
-  * EP flux components     F_φ = −a cosφ · u′v′̄
-                           F_p =  a cosφ · f · v′θ′̄ / (∂θ̄/∂p)
-  * EP flux divergence     ∇·F = (1/a cosφ)·∂(F_φ cosφ)/∂φ + ∂F_p/∂p
+  * EP flux components     F_φ = −u′v′̄                          [m² s⁻²]
+                           F_p =  f · v′θ′̄ / (∂θ̄/∂p)           [m Pa s⁻²]
+  * EP flux divergence     ∇·F = (1/a cosφ)·∂(cosφ F_φ)/∂φ + ∂F_p/∂p  [m s⁻²]
   * Residual meridional    v* = v̄ − ∂/∂p(v′θ′̄ / ∂θ̄/∂p)
     velocity
 
@@ -55,6 +55,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
+from scipy.ndimage import gaussian_filter
 from weathergen.stratosphere.config import load_validations_config
 from weathergen.stratosphere.io import (
     convert_times_to_datetime,
@@ -163,9 +164,10 @@ def compute_qg_tem(
     dict with keys (all shapes ``(n_lats, n_levels)`` unless noted):
         ``lat_centres``: (n_lats,)
         ``u_bar``, ``theta_bar``, ``dtheta_dp``
-        ``F_phi``, ``F_p``: EP flux components (m³ s⁻²)
-        ``div_F``: EP flux divergence (m s⁻¹ day⁻¹, sign: negative = easterly forcing)
-        ``v_star``: residual meridional velocity (m/s)
+        ``F_phi``: meridional EP flux component  [m² s⁻²]
+        ``F_p``:   vertical EP flux component    [m Pa s⁻²]
+        ``div_F``: EP flux divergence            [m s⁻¹ day⁻¹]  (negative = westward/easterly forcing)
+        ``v_star``: residual meridional velocity [m s⁻¹]
     """
     edges, lat_centres = _build_lat_bins(lat_width)
     groups = _build_lat_groups(lats, edges)
@@ -210,17 +212,14 @@ def compute_qg_tem(
     dtheta_dp_safe = np.where(np.abs(dtheta_dp) > 1e-6, dtheta_dp, np.nan)
 
     # ---- EP flux components --------------------------------------------------
-    # F_φ = −a cosφ ū′v̄′       (n_lats, n_lev)
-    F_phi = -_EARTH_RADIUS * cos_phi[:, None] * uv_bar
+    # Correct pressure-coordinate QG-TEM definitions (no a cosφ factor here;
+    # that factor belongs only in the spherical divergence operator below).
+    #
+    # F_φ = −u′v′   [m² s⁻²]
+    F_phi = -uv_bar
 
-    # F_p =  a cosφ f v′θ′ / (∂θ̄/∂p)
-    F_p = (
-        _EARTH_RADIUS
-        * cos_phi[:, None]
-        * f[:, None]
-        * vtheta_bar
-        / dtheta_dp_safe
-    )
+    # F_p = f · v′θ′ / (∂θ̄/∂p)   [m Pa s⁻²]
+    F_p = f[:, None] * vtheta_bar / dtheta_dp_safe
 
     # ---- EP flux divergence ∇·F = (1/a cosφ) ∂(F_φ cosφ)/∂φ + ∂F_p/∂p ----
     div_F = np.full_like(F_phi, np.nan)
@@ -242,11 +241,12 @@ def compute_qg_tem(
     dFp_dp[:, 0] = (F_p[:, 1] - F_p[:, 0]) / dp[0]
     dFp_dp[:, -1] = (F_p[:, -1] - F_p[:, -2]) / dp[-1]
 
+    # ∇·F = (1/(a cosφ)) ∂(cosφ F_φ)/∂φ + ∂F_p/∂p
+    # Units: (1/m)·(m²/s²) + (m Pa/s²)/Pa = m/s²
+    # Multiply by 86 400 s/day → m s⁻¹ day⁻¹
     with np.errstate(invalid="ignore"):
         div_F = (1.0 / (_EARTH_RADIUS * cos_phi[:, None])) * d_Fphi + dFp_dp
-    # Convert from s⁻¹ to m s⁻¹ day⁻¹ (multiply by a/cosφ to get acceleration,
-    # then × 86400 to get per day)
-    div_F_accel = div_F * _EARTH_RADIUS / cos_phi[:, None] * 86400.0   # m/s/day
+    div_F_accel = div_F * 86400.0   # m s⁻¹ day⁻¹
 
     # ---- residual meridional velocity ----------------------------------------
     # v* = v̄ − ∂/∂p (v′θ′ / ∂θ̄/∂p)
@@ -389,6 +389,18 @@ def extract_qg_tem(
     }
 
 
+def _smooth(field: np.ndarray, sigma: float = 1.5) -> np.ndarray:
+    """Apply 2-D Gaussian smoothing, ignoring NaNs by normalised convolution."""
+    out = np.empty_like(field)
+    valid = np.isfinite(field).astype(float)
+    filled = np.where(np.isfinite(field), field, 0.0)
+    blurred = gaussian_filter(filled, sigma=sigma)
+    weight = gaussian_filter(valid, sigma=sigma)
+    with np.errstate(invalid="ignore"):
+        out = np.where(weight > 0.1, blurred / weight, np.nan)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Plotting helpers
 # ---------------------------------------------------------------------------
@@ -455,6 +467,8 @@ def plot_ep_flux_divergence_hovmoller(
     for ax, key, title in zip(axes, ("pred", "tgt"), ("Prediction", "ERA5 Target")):
         # Average ∇·F over the latitude band: (n_time, n_lev)
         field = np.nanmean(data[key]["div_F"][:, lat_mask, :], axis=1)
+        # Smooth in time × pressure space to suppress grid-scale noise
+        field = _smooth(field, sigma=1.5)
         im = ax.contourf(
             np.arange(len(datetimes)),
             pressures,
@@ -495,9 +509,17 @@ def plot_ep_flux_vectors(
     output_dir: Path,
     ssw_date: datetime = SSW_DATE,
     clim: float = 3.0,
+    lat_range: tuple[float, float] = (0.0, 90.0),
 ) -> None:
     """
     Time-mean EP flux vectors (F_φ, F_p) overlaid on ∇·F shading.
+
+    The two EP-flux components live in very different physical spaces
+    (F_φ in m²/s², F_p in m·Pa/s²), so they are independently normalised to
+    their 95th-percentile absolute value before being passed to quiver.  This
+    gives arrows whose *direction* is meaningful while the *length* indicates
+    relative local magnitude.  A reference arrow of length 1 is drawn in the
+    corner.
 
     A 1×2 panel: prediction (left) and target (right).
     """
@@ -505,44 +527,69 @@ def plot_ep_flux_vectors(
     lat_centres = data["lat_centres"]
     pressures = data["pressures_hpa"]
 
+    lat_mask = (lat_centres >= lat_range[0]) & (lat_centres <= lat_range[1])
+    lats_plot = lat_centres[lat_mask]
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
     norm = TwoSlopeNorm(vmin=-clim, vcenter=0.0, vmax=clim)
     cmap = "RdBu_r"
 
-    # Quiver subsampling
-    lat_skip = max(1, len(lat_centres) // 20)
+    # Quiver subsampling: ~15 arrows in each dimension
+    lat_skip = max(1, lat_mask.sum() // 15)
     lev_skip = max(1, len(pressures) // 10)
-    Lq = lat_centres[::lat_skip]
+    Lq = lats_plot[::lat_skip]
     Pq = pressures[::lev_skip]
 
     for ax, key, title in zip(axes, ("pred", "tgt"), ("Prediction", "ERA5 Target")):
-        div_F_mean = np.nanmean(data[key]["div_F"], axis=0)    # (n_lats, n_lev)
-        F_phi_mean = np.nanmean(data[key]["F_phi"], axis=0)
-        F_p_mean   = np.nanmean(data[key]["F_p"],   axis=0)
+        # Time-mean then smooth
+        div_F_mean = _smooth(np.nanmean(data[key]["div_F"][:, lat_mask, :], axis=0))
+        F_phi_mean = _smooth(np.nanmean(data[key]["F_phi"][:, lat_mask, :], axis=0))
+        F_p_mean   = _smooth(np.nanmean(data[key]["F_p"  ][:, lat_mask, :], axis=0))
+        u_bar_mean = _smooth(np.nanmean(data[key]["u_bar"][:, lat_mask, :], axis=0))
 
         im = ax.contourf(
-            lat_centres, pressures, div_F_mean.T,
+            lats_plot, pressures, div_F_mean.T,
             levels=np.linspace(-clim, clim, 21),
             cmap=cmap, norm=norm, extend="both",
         )
-        ax.contour(lat_centres, pressures, div_F_mean.T, levels=[0.0],
-                   colors="k", linewidths=0.8)
+        ax.contour(lats_plot, pressures, div_F_mean.T,
+                   levels=[0.0], colors="k", linewidths=0.8)
 
-        # Normalise arrows for display (scale each component by its max)
+        # Overlay zonal mean wind contours (thin grey dashed)
+        u_levels = np.arange(-80, 90, 10)
+        cs = ax.contour(lats_plot, pressures, u_bar_mean.T,
+                        levels=u_levels, colors="grey",
+                        linewidths=0.6, linestyles="--", alpha=0.6)
+        ax.clabel(cs, levels=[l for l in u_levels if l % 20 == 0],
+                  inline=True, fontsize=7, fmt="%d")
+
+        # EP flux arrows: normalise each component by its 95th-percentile
+        # absolute value so arrows show direction+relative magnitude, not
+        # absolute magnitude (which differs by orders of magnitude between
+        # F_φ and F_p).
         Fq = F_phi_mean[::lat_skip, :][:, ::lev_skip]
-        Gq = F_p_mean[::lat_skip, :][:, ::lev_skip]
-        max_F = np.nanmax(np.abs(Fq)) or 1.0
-        max_G = np.nanmax(np.abs(Gq)) or 1.0
+        Gq = F_p_mean[::lat_skip,   :][:, ::lev_skip]
+        ref_F = np.nanpercentile(np.abs(F_phi_mean), 95) or 1.0
+        ref_G = np.nanpercentile(np.abs(F_p_mean),   95) or 1.0
+        U = Fq / ref_F
+        # F_p > 0 means downward (increasing p); flip sign so arrow points upward
+        V = -(Gq / ref_G)
         ax.quiver(
-            Lq, Pq, (Fq / max_F).T, -(Gq / max_G).T,   # flip F_p: +p is down
-            scale=20, width=0.003, color="k", alpha=0.7,
+            Lq, Pq, U.T, V.T,
+            scale=15, width=0.004, color="k", alpha=0.8,
+            headwidth=4, headlength=5,
         )
 
         _pressure_axis(ax)
+        ax.set_xlim(lat_range)
         ax.set_xlabel("Latitude (°N)", fontsize=11)
-        ax.set_title(f"{label}  {title}\nTime-mean EP flux", fontsize=12, fontweight="bold")
+        ax.set_title(
+            f"{label}  {title}\nTime-mean EP flux  (arrows: direction, grey = ū contours)",
+            fontsize=12, fontweight="bold",
+        )
 
-    plt.colorbar(im, ax=axes, label="∇·F  (m s⁻¹ day⁻¹)", shrink=0.8)
+    cb = plt.colorbar(im, ax=axes, label="∇·F  (m s⁻¹ day⁻¹)", shrink=0.8)
+    cb.ax.tick_params(labelsize=9)
     plt.tight_layout()
     out = output_dir / f"{label}_ep_flux_vectors.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -581,6 +628,7 @@ def plot_v_residual_hovmoller(
 
     for ax, key, title in zip(axes, ("pred", "tgt"), ("Prediction", "ERA5 Target")):
         field = np.nanmean(data[key]["v_star"][:, lat_mask, :], axis=1)
+        field = _smooth(field, sigma=1.5)
         im = ax.contourf(
             np.arange(len(datetimes)),
             pressures,
