@@ -73,10 +73,10 @@ _logger = logging.getLogger(__name__)
 _ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Physical constants
-_EARTH_RADIUS = 6.371e6        # m
-_OMEGA = 7.292e-5              # rad s⁻¹
-_P0_PA = 1.0e5                 # Pa  (reference pressure for θ)
-_KAPPA = 2.0 / 7.0             # R/cp for dry air
+_EARTH_RADIUS = 6.371e6  # m
+_OMEGA = 7.292e-5  # rad s⁻¹
+_P0_PA = 1.0e5  # Pa  (reference pressure for θ)
+_KAPPA = 2.0 / 7.0  # R/cp for dry air
 
 # Default SSW reference date
 SSW_DATE = datetime(2018, 2, 12)
@@ -171,18 +171,18 @@ def compute_qg_tem(
     """
     edges, lat_centres = _build_lat_bins(lat_width)
     groups = _build_lat_groups(lats, edges)
-    phi = np.deg2rad(lat_centres)                          # (n_lats,)
-    f = 2.0 * _OMEGA * np.sin(phi)                        # Coriolis (n_lats,)
-    cos_phi = np.cos(phi)                                   # (n_lats,)
+    phi = np.deg2rad(lat_centres)  # (n_lats,)
+    f = 2.0 * _OMEGA * np.sin(phi)  # Coriolis (n_lats,)
+    cos_phi = np.cos(phi)  # (n_lats,)
 
     n_lats = len(lat_centres)
     n_lev = len(pressures_pa)
 
     # ---- potential temperature ------------------------------------------------
-    theta = t * (_P0_PA / pressures_pa[None, :]) ** _KAPPA   # (n_pts, n_lev)
+    theta = t * (_P0_PA / pressures_pa[None, :]) ** _KAPPA  # (n_pts, n_lev)
 
     # ---- zonal means ---------------------------------------------------------
-    u_bar = _zonal_mean_field(u, groups)        # (n_lats, n_lev)
+    u_bar = _zonal_mean_field(u, groups)  # (n_lats, n_lev)
     v_bar = _zonal_mean_field(v, groups)
     theta_bar = _zonal_mean_field(theta, groups)
 
@@ -193,7 +193,7 @@ def compute_qg_tem(
     for i, idx in enumerate(groups):
         if len(idx) == 0:
             continue
-        u_prime = u[idx] - u_bar[i]               # (n_grp, n_lev)
+        u_prime = u[idx] - u_bar[i]  # (n_grp, n_lev)
         v_prime = v[idx] - v_bar[i]
         theta_prime = theta[idx] - theta_bar[i]
         uv_bar[i] = (u_prime * v_prime).mean(axis=0)
@@ -201,11 +201,10 @@ def compute_qg_tem(
 
     # ---- ∂θ̄/∂p — centred finite differences in pressure space ---------------
     dtheta_dp = np.full_like(theta_bar, np.nan)
-    dp = pressures_pa[1:] - pressures_pa[:-1]     # (n_lev-1,) positive (ascending p)
-    dtheta_dp[:, 1:-1] = (
-        (theta_bar[:, 2:] - theta_bar[:, :-2])
-        / (pressures_pa[2:] - pressures_pa[:-2])[None, :]
-    )
+    dp = pressures_pa[1:] - pressures_pa[:-1]  # (n_lev-1,) positive (ascending p)
+    dtheta_dp[:, 1:-1] = (theta_bar[:, 2:] - theta_bar[:, :-2]) / (
+        pressures_pa[2:] - pressures_pa[:-2]
+    )[None, :]
     dtheta_dp[:, 0] = (theta_bar[:, 1] - theta_bar[:, 0]) / dp[0]
     dtheta_dp[:, -1] = (theta_bar[:, -1] - theta_bar[:, -2]) / dp[-1]
     # In a stable atmosphere ∂θ/∂p < 0; guard against near-zero values
@@ -234,10 +233,9 @@ def compute_qg_tem(
 
     # ∂F_p/∂p via centred differences in pressure
     dFp_dp = np.full_like(F_p, np.nan)
-    dFp_dp[:, 1:-1] = (
-        (F_p[:, 2:] - F_p[:, :-2])
-        / (pressures_pa[2:] - pressures_pa[:-2])[None, :]
-    )
+    dFp_dp[:, 1:-1] = (F_p[:, 2:] - F_p[:, :-2]) / (
+        pressures_pa[2:] - pressures_pa[:-2]
+    )[None, :]
     dFp_dp[:, 0] = (F_p[:, 1] - F_p[:, 0]) / dp[0]
     dFp_dp[:, -1] = (F_p[:, -1] - F_p[:, -2]) / dp[-1]
 
@@ -246,16 +244,15 @@ def compute_qg_tem(
     # Multiply by 86 400 s/day → m s⁻¹ day⁻¹
     with np.errstate(invalid="ignore"):
         div_F = (1.0 / (_EARTH_RADIUS * cos_phi[:, None])) * d_Fphi + dFp_dp
-    div_F_accel = div_F * 86400.0   # m s⁻¹ day⁻¹
+    div_F_accel = div_F * 86400.0  # m s⁻¹ day⁻¹
 
     # ---- residual meridional velocity ----------------------------------------
     # v* = v̄ − ∂/∂p (v′θ′ / ∂θ̄/∂p)
-    heat_flux_ratio = vtheta_bar / dtheta_dp_safe   # (n_lats, n_lev)
+    heat_flux_ratio = vtheta_bar / dtheta_dp_safe  # (n_lats, n_lev)
     d_hfr_dp = np.full_like(heat_flux_ratio, np.nan)
-    d_hfr_dp[:, 1:-1] = (
-        (heat_flux_ratio[:, 2:] - heat_flux_ratio[:, :-2])
-        / (pressures_pa[2:] - pressures_pa[:-2])[None, :]
-    )
+    d_hfr_dp[:, 1:-1] = (heat_flux_ratio[:, 2:] - heat_flux_ratio[:, :-2]) / (
+        pressures_pa[2:] - pressures_pa[:-2]
+    )[None, :]
     d_hfr_dp[:, 0] = (heat_flux_ratio[:, 1] - heat_flux_ratio[:, 0]) / dp[0]
     d_hfr_dp[:, -1] = (heat_flux_ratio[:, -1] - heat_flux_ratio[:, -2]) / dp[-1]
 
@@ -317,8 +314,10 @@ def extract_qg_tem(
         # Keep only stratospheric levels (p ≤ 150 hPa) that appear in all three
         strat_pressures_hpa = sorted(
             {
-                p for ch, p in u_map.items()
-                if p > 0.01 and p <= 150.0
+                p
+                for ch, p in u_map.items()
+                if p > 0.01
+                and p <= 150.0
                 and ch.replace("u_", "v_") in v_map
                 and ch.replace("u_", "t_") in t_map
             }
@@ -334,7 +333,9 @@ def extract_qg_tem(
             return None
 
         # Invert map: pressure → channel name (use u to find the others)
-        p2u: dict[float, str] = {p: ch for ch, p in u_map.items() if p in strat_pressures_hpa}
+        p2u: dict[float, str] = {
+            p: ch for ch, p in u_map.items() if p in strat_pressures_hpa
+        }
         p2v: dict[float, str] = {p: ch.replace("u_", "v_") for p, ch in p2u.items()}
         p2t: dict[float, str] = {p: ch.replace("u_", "t_") for p, ch in p2u.items()}
 
@@ -354,20 +355,26 @@ def extract_qg_tem(
 
         # Accumulate per-step diagnostics
         keys = ("div_F", "v_star", "F_phi", "F_p", "u_bar")
-        pred_acc: dict[str, np.ndarray] = {k: np.full((n_t, n_lats, n_lev), np.nan) for k in keys}
-        tgt_acc:  dict[str, np.ndarray] = {k: np.full((n_t, n_lats, n_lev), np.nan) for k in keys}
+        pred_acc: dict[str, np.ndarray] = {
+            k: np.full((n_t, n_lats, n_lev), np.nan) for k in keys
+        }
+        tgt_acc: dict[str, np.ndarray] = {
+            k: np.full((n_t, n_lats, n_lev), np.nan) for k in keys
+        }
         raw_times: list = []
 
         for i, step in enumerate(steps):
             pred, tgt, times = load_step(zio, stream_name, step, sample)
-            pred3 = np.atleast_3d(pred)   # (n_pts, n_ch, n_ens)
+            pred3 = np.atleast_3d(pred)  # (n_pts, n_ch, n_ens)
             tgt3 = np.atleast_3d(tgt)
 
             for arr3, acc in ((pred3, pred_acc), (tgt3, tgt_acc)):
-                u_field = arr3[:, u_ch_idx, 0].astype(np.float64)   # (n_pts, n_lev)
+                u_field = arr3[:, u_ch_idx, 0].astype(np.float64)  # (n_pts, n_lev)
                 v_field = arr3[:, v_ch_idx, 0].astype(np.float64)
                 t_field = arr3[:, t_ch_idx, 0].astype(np.float64)
-                diags = compute_qg_tem(u_field, v_field, t_field, lats, pressures_pa, lat_width)
+                diags = compute_qg_tem(
+                    u_field, v_field, t_field, lats, pressures_pa, lat_width
+                )
                 for k in keys:
                     acc[k][i] = diags[k]
 
@@ -376,7 +383,12 @@ def extract_qg_tem(
     datetimes = convert_times_to_datetime(np.array(raw_times))
     _logger.info(
         "%s: %d steps, %d lat bands, %d levels (%.1f–%.1f hPa)",
-        label, n_t, n_lats, n_lev, pressures_hpa[0], pressures_hpa[-1],
+        label,
+        n_t,
+        n_lats,
+        n_lev,
+        pressures_hpa[0],
+        pressures_hpa[-1],
     )
 
     return {
@@ -406,20 +418,35 @@ def _smooth(field: np.ndarray, sigma: float = 1.5) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _pressure_axis(ax: Any, ssw_idx: int | None = None) -> None:
+def _pressure_axis(
+    ax: Any,
+    ssw_idx: int | None = None,
+    p_range: tuple[float, float] = (0.01, 1000.0),
+) -> None:
     ax.set_yscale("log")
-    ax.invert_yaxis()
-    ax.set_yticks(_P_TICKS)
-    ax.set_yticklabels(_P_TICK_LABELS)
+    # NOTE: invert_yaxis() is NOT called here because with sharey=True a second
+    # call would un-invert.  Each plot function sets ylim explicitly instead.
+    visible_ticks = [p for p in _P_TICKS if p_range[0] <= p <= p_range[1]]
+    ax.set_yticks(visible_ticks)
+    ax.set_yticklabels([str(p) for p in visible_ticks])
     ax.set_ylabel("Pressure (hPa)", fontsize=11)
     ax.grid(True, alpha=0.3, linestyle="--")
     if ssw_idx is not None:
-        ax.axvline(ssw_idx, color="red", linestyle="--", linewidth=1.5, alpha=0.7, label="SSW onset")
+        ax.axvline(
+            ssw_idx,
+            color="red",
+            linestyle="--",
+            linewidth=1.5,
+            alpha=0.7,
+            label="SSW onset",
+        )
 
 
 def _get_ssw_idx(datetimes: list[datetime], ssw_date: datetime) -> int | None:
     if datetimes[0] <= ssw_date <= datetimes[-1]:
-        return int(np.argmin([abs((dt - ssw_date).total_seconds()) for dt in datetimes]))
+        return int(
+            np.argmin([abs((dt - ssw_date).total_seconds()) for dt in datetimes])
+        )
     return None
 
 
@@ -427,7 +454,9 @@ def _time_ticks(ax: Any, datetimes: list[datetime], every: int = 14) -> None:
     n = len(datetimes)
     ticks = np.arange(0, n, every)
     ax.set_xticks(ticks)
-    ax.set_xticklabels([datetimes[i].strftime("%m-%d") for i in ticks], rotation=45, fontsize=9)
+    ax.set_xticklabels(
+        [datetimes[i].strftime("%m-%d") for i in ticks], rotation=45, fontsize=9
+    )
     ax.set_xlabel("Date (MM-DD)", fontsize=11)
 
 
@@ -442,6 +471,7 @@ def plot_ep_flux_divergence_hovmoller(
     ssw_date: datetime = SSW_DATE,
     lat_range: tuple[float, float] = (20.0, 90.0),
     clim: float = 5.0,
+    p_range: tuple[float, float] = (1.0, 100.0),
 ) -> None:
     """
     Hovmöller (time × pressure) of EP flux divergence at a fixed latitude band.
@@ -460,7 +490,7 @@ def plot_ep_flux_divergence_hovmoller(
         _logger.warning("No latitude bins in range %s — skipping Hovmöller", lat_range)
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
     norm = TwoSlopeNorm(vmin=-clim, vcenter=0.0, vmax=clim)
     cmap = "RdBu_r"
 
@@ -486,12 +516,20 @@ def plot_ep_flux_divergence_hovmoller(
             colors="k",
             linewidths=0.8,
         )
-        _pressure_axis(ax, ssw_idx)
+        _pressure_axis(ax, ssw_idx, p_range=p_range)
         _time_ticks(ax, datetimes)
-        ax.set_title(f"{label}  {title}\n∇·F ({lat_range[0]:.0f}–{lat_range[1]:.0f}°N mean)",
-                     fontsize=12, fontweight="bold")
+        ax.set_title(
+            f"{label}  {title}\n∇·F ({lat_range[0]:.0f}–{lat_range[1]:.0f}°N mean)",
+            fontsize=12,
+            fontweight="bold",
+        )
 
-    plt.colorbar(im, ax=axes, label="∇·F  (m s⁻¹ day⁻¹)", shrink=0.8)
+    axes[0].set_ylim(p_range[1], p_range[0])  # high p at bottom, low p at top
+    cbar = fig.colorbar(
+        im, ax=axes.tolist(), orientation="horizontal", pad=0.18, shrink=0.7, aspect=40
+    )
+    cbar.set_label("∇·F  (m s⁻¹ day⁻¹)", fontsize=11)
+    cbar.ax.tick_params(labelsize=9)
     plt.tight_layout()
     out = output_dir / f"{label}_ep_flux_divergence.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -510,6 +548,7 @@ def plot_ep_flux_vectors(
     ssw_date: datetime = SSW_DATE,
     clim: float = 3.0,
     lat_range: tuple[float, float] = (0.0, 90.0),
+    p_range: tuple[float, float] = (1.0, 100.0),
 ) -> None:
     """
     Time-mean EP flux vectors (F_φ, F_p) overlaid on ∇·F shading.
@@ -530,7 +569,7 @@ def plot_ep_flux_vectors(
     lat_mask = (lat_centres >= lat_range[0]) & (lat_centres <= lat_range[1])
     lats_plot = lat_centres[lat_mask]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
     norm = TwoSlopeNorm(vmin=-clim, vcenter=0.0, vmax=clim)
     cmap = "RdBu_r"
 
@@ -544,52 +583,81 @@ def plot_ep_flux_vectors(
         # Time-mean then smooth
         div_F_mean = _smooth(np.nanmean(data[key]["div_F"][:, lat_mask, :], axis=0))
         F_phi_mean = _smooth(np.nanmean(data[key]["F_phi"][:, lat_mask, :], axis=0))
-        F_p_mean   = _smooth(np.nanmean(data[key]["F_p"  ][:, lat_mask, :], axis=0))
+        F_p_mean = _smooth(np.nanmean(data[key]["F_p"][:, lat_mask, :], axis=0))
         u_bar_mean = _smooth(np.nanmean(data[key]["u_bar"][:, lat_mask, :], axis=0))
 
         im = ax.contourf(
-            lats_plot, pressures, div_F_mean.T,
+            lats_plot,
+            pressures,
+            div_F_mean.T,
             levels=np.linspace(-clim, clim, 21),
-            cmap=cmap, norm=norm, extend="both",
+            cmap=cmap,
+            norm=norm,
+            extend="both",
         )
-        ax.contour(lats_plot, pressures, div_F_mean.T,
-                   levels=[0.0], colors="k", linewidths=0.8)
+        ax.contour(
+            lats_plot, pressures, div_F_mean.T, levels=[0.0], colors="k", linewidths=0.8
+        )
 
         # Overlay zonal mean wind contours (thin grey dashed)
         u_levels = np.arange(-80, 90, 10)
-        cs = ax.contour(lats_plot, pressures, u_bar_mean.T,
-                        levels=u_levels, colors="grey",
-                        linewidths=0.6, linestyles="--", alpha=0.6)
-        ax.clabel(cs, levels=[l for l in u_levels if l % 20 == 0],
-                  inline=True, fontsize=7, fmt="%d")
+        cs = ax.contour(
+            lats_plot,
+            pressures,
+            u_bar_mean.T,
+            levels=u_levels,
+            colors="grey",
+            linewidths=0.6,
+            linestyles="--",
+            alpha=0.6,
+        )
+        ax.clabel(
+            cs,
+            levels=[l for l in u_levels if l % 20 == 0],
+            inline=True,
+            fontsize=7,
+            fmt="%d",
+        )
 
         # EP flux arrows: normalise each component by its 95th-percentile
         # absolute value so arrows show direction+relative magnitude, not
         # absolute magnitude (which differs by orders of magnitude between
         # F_φ and F_p).
         Fq = F_phi_mean[::lat_skip, :][:, ::lev_skip]
-        Gq = F_p_mean[::lat_skip,   :][:, ::lev_skip]
+        Gq = F_p_mean[::lat_skip, :][:, ::lev_skip]
         ref_F = np.nanpercentile(np.abs(F_phi_mean), 95) or 1.0
-        ref_G = np.nanpercentile(np.abs(F_p_mean),   95) or 1.0
+        ref_G = np.nanpercentile(np.abs(F_p_mean), 95) or 1.0
         U = Fq / ref_F
         # F_p > 0 means downward (increasing p); flip sign so arrow points upward
         V = -(Gq / ref_G)
         ax.quiver(
-            Lq, Pq, U.T, V.T,
-            scale=15, width=0.004, color="k", alpha=0.8,
-            headwidth=4, headlength=5,
+            Lq,
+            Pq,
+            U.T,
+            V.T,
+            scale=15,
+            width=0.004,
+            color="k",
+            alpha=0.8,
+            headwidth=4,
+            headlength=5,
         )
 
-        _pressure_axis(ax)
+        _pressure_axis(ax, p_range=p_range)
         ax.set_xlim(lat_range)
         ax.set_xlabel("Latitude (°N)", fontsize=11)
         ax.set_title(
             f"{label}  {title}\nTime-mean EP flux  (arrows: direction, grey = ū contours)",
-            fontsize=12, fontweight="bold",
+            fontsize=12,
+            fontweight="bold",
         )
 
-    cb = plt.colorbar(im, ax=axes, label="∇·F  (m s⁻¹ day⁻¹)", shrink=0.8)
-    cb.ax.tick_params(labelsize=9)
+    axes[0].set_ylim(p_range[1], p_range[0])  # high p at bottom, low p at top
+    cbar = fig.colorbar(
+        im, ax=axes.tolist(), orientation="horizontal", pad=0.08, shrink=0.7, aspect=40
+    )
+    cbar.set_label("∇·F  (m s⁻¹ day⁻¹)", fontsize=11)
+    cbar.ax.tick_params(labelsize=9)
     plt.tight_layout()
     out = output_dir / f"{label}_ep_flux_vectors.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -608,6 +676,7 @@ def plot_v_residual_hovmoller(
     ssw_date: datetime = SSW_DATE,
     lat_range: tuple[float, float] = (50.0, 80.0),
     clim: float = 0.3,
+    p_range: tuple[float, float] = (1.0, 100.0),
 ) -> None:
     """
     Hovmöller (time × pressure) of residual meridional velocity v*.
@@ -623,7 +692,7 @@ def plot_v_residual_hovmoller(
         _logger.warning("No latitude bins in range %s for v* Hovmöller", lat_range)
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
     norm = TwoSlopeNorm(vmin=-clim, vcenter=0.0, vmax=clim)
 
     for ax, key, title in zip(axes, ("pred", "tgt"), ("Prediction", "ERA5 Target")):
@@ -638,16 +707,28 @@ def plot_v_residual_hovmoller(
             norm=norm,
             extend="both",
         )
-        ax.contour(np.arange(len(datetimes)), pressures, field.T,
-                   levels=[0.0], colors="k", linewidths=0.8)
-        _pressure_axis(ax, ssw_idx)
+        ax.contour(
+            np.arange(len(datetimes)),
+            pressures,
+            field.T,
+            levels=[0.0],
+            colors="k",
+            linewidths=0.8,
+        )
+        _pressure_axis(ax, ssw_idx, p_range=p_range)
         _time_ticks(ax, datetimes)
         ax.set_title(
             f"{label}  {title}\nv* residual ({lat_range[0]:.0f}–{lat_range[1]:.0f}°N mean)",
-            fontsize=12, fontweight="bold",
+            fontsize=12,
+            fontweight="bold",
         )
 
-    plt.colorbar(im, ax=axes, label="v*  (m s⁻¹)", shrink=0.8)
+    axes[0].set_ylim(p_range[1], p_range[0])  # high p at bottom, low p at top
+    cbar = fig.colorbar(
+        im, ax=axes.tolist(), orientation="horizontal", pad=0.18, shrink=0.7, aspect=40
+    )
+    cbar.set_label("v*  (m s⁻¹)", fontsize=11)
+    cbar.ax.tick_params(labelsize=9)
     plt.tight_layout()
     out = output_dir / f"{label}_v_residual.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -687,29 +768,43 @@ def plot_polar_cap_efd_timeseries(
         color = colors[color_idx % len(colors)]
 
         lat_mask = lat_centres >= polar_lat_min
-        p_mask = (pressures >= pressure_range_hpa[0]) & (pressures <= pressure_range_hpa[1])
+        p_mask = (pressures >= pressure_range_hpa[0]) & (
+            pressures <= pressure_range_hpa[1]
+        )
 
         if not lat_mask.any() or not p_mask.any():
             continue
 
         for key, ls, alpha, suffix in (
-            ("pred", "-",  0.9, "pred"),
-            ("tgt",  "--", 0.6, "ERA5"),
+            ("pred", "-", 0.9, "pred"),
+            ("tgt", "--", 0.6, "ERA5"),
         ):
             series = np.nanmean(
                 data[key]["div_F"][:, lat_mask, :][:, :, p_mask],
                 axis=(1, 2),
             )
-            ax.plot(datetimes, series,
-                    color=color, linestyle=ls, linewidth=2.0, alpha=alpha,
-                    label=f"{label} {suffix}")
+            ax.plot(
+                datetimes,
+                series,
+                color=color,
+                linestyle=ls,
+                linewidth=2.0,
+                alpha=alpha,
+                label=f"{label} {suffix}",
+            )
 
     ssw_in_range = any(
         d["datetimes"][0] <= ssw_date <= d["datetimes"][-1] for d in data_list
     )
     if ssw_in_range:
-        ax.axvline(ssw_date, color="red", linestyle="-.", linewidth=1.8, alpha=0.7,
-                   label=f"SSW onset ({ssw_date.strftime('%b %d, %Y')})")
+        ax.axvline(
+            ssw_date,
+            color="red",
+            linestyle="-.",
+            linewidth=1.8,
+            alpha=0.7,
+            label=f"SSW onset ({ssw_date.strftime('%b %d, %Y')})",
+        )
 
     ax.axhline(0.0, color="k", linewidth=0.8, alpha=0.5)
     ax.set_xlabel("Date", fontsize=12)
@@ -717,7 +812,8 @@ def plot_polar_cap_efd_timeseries(
     ax.set_title(
         f"Polar cap (≥{polar_lat_min:.0f}°N, "
         f"{pressure_range_hpa[0]:.0f}–{pressure_range_hpa[1]:.0f} hPa) EP flux divergence",
-        fontsize=13, fontweight="bold",
+        fontsize=13,
+        fontweight="bold",
     )
     ax.legend(loc="best", fontsize=9, ncol=2)
     ax.grid(True, alpha=0.3)
@@ -727,6 +823,42 @@ def plot_polar_cap_efd_timeseries(
     fig.savefig(out, dpi=150, bbox_inches="tight")
     _logger.info("Saved %s", out)
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Date alignment
+# ---------------------------------------------------------------------------
+
+
+def _align_date_range(data_list: list[dict[str, Any]]) -> None:
+    """
+    Trim all entries in *data_list* to their common calendar date range (in-place).
+
+    Ensures that per-experiment Hovmöller and time-mean plots all cover the same
+    calendar period, so that ERA5 target panels are identical across lead times
+    and predictions are averaged over the same window.
+    """
+    if len(data_list) <= 1:
+        return
+
+    start = max(d["datetimes"][0] for d in data_list)
+    end = min(d["datetimes"][-1] for d in data_list)
+    if start > end:
+        _logger.warning(
+            "No overlapping date range across experiments — skipping alignment."
+        )
+        return
+
+    _logger.info("Aligning all experiments to common period %s – %s", start, end)
+    diag_keys = ("div_F", "v_star", "F_phi", "F_p", "u_bar")
+    for data in data_list:
+        dts = data["datetimes"]
+        mask = np.array([start <= dt <= end for dt in dts])
+        data["datetimes"] = [dt for dt, m in zip(dts, mask) if m]
+        for split in ("pred", "tgt"):
+            for k in diag_keys:
+                if k in data[split]:
+                    data[split][k] = data[split][k][mask]
 
 
 # ---------------------------------------------------------------------------
@@ -792,6 +924,14 @@ def main(argv: list[str] | None = None) -> None:
         default=SSW_DATE,
         help="SSW onset date for reference lines (YYYY-MM-DD).  [default: 2018-02-12]",
     )
+    parser.add_argument(
+        "--p-range",
+        type=float,
+        nargs=2,
+        metavar=("P_MIN", "P_MAX"),
+        default=[1.0, 100.0],
+        help="Pressure axis range in hPa (min max).  [default: 1 100]",
+    )
     args = parser.parse_args(argv)
 
     print("=" * 60)
@@ -803,6 +943,7 @@ def main(argv: list[str] | None = None) -> None:
 
     data_list: list[dict[str, Any]] = []
 
+    # Phase 1: Extract all diagnostics
     for label, run_id, sample in run_specs:
         zarr_path = args.data_dir / run_id / _ZARR_FNAME
 
@@ -817,15 +958,30 @@ def main(argv: list[str] | None = None) -> None:
 
         data_list.append(data)
 
-        # Per-experiment plots
+    # Phase 2: Align all experiments to their common calendar date range so that
+    # ERA5 target panels are identical across lead times.
+    _align_date_range(data_list)
+
+    # Phase 3: Per-experiment plots (over the aligned date range)
+    for data in data_list:
+        label = data["label"]
         exp_dir = args.output_dir / label
         exp_dir.mkdir(parents=True, exist_ok=True)
 
+        p_range = tuple(args.p_range)  # type: ignore[arg-type]
         plot_ep_flux_divergence_hovmoller(
-            data, exp_dir, args.ssw_date, clim=args.clim_divF,
+            data,
+            exp_dir,
+            args.ssw_date,
+            clim=args.clim_divF,
+            p_range=p_range,
         )
-        plot_ep_flux_vectors(data, exp_dir, args.ssw_date, clim=args.clim_divF)
-        plot_v_residual_hovmoller(data, exp_dir, args.ssw_date, clim=args.clim_vstar)
+        plot_ep_flux_vectors(
+            data, exp_dir, args.ssw_date, clim=args.clim_divF, p_range=p_range
+        )
+        plot_v_residual_hovmoller(
+            data, exp_dir, args.ssw_date, clim=args.clim_vstar, p_range=p_range
+        )
 
         # Save numpy archive
         npz_path = exp_dir / "qg_tem_diagnostics.npz"
@@ -834,15 +990,18 @@ def main(argv: list[str] | None = None) -> None:
             lat_centres=data["lat_centres"],
             pressures_hpa=data["pressures_hpa"],
             **{f"pred_{k}": v for k, v in data["pred"].items()},
-            **{f"tgt_{k}":  v for k, v in data["tgt"].items()},
+            **{f"tgt_{k}": v for k, v in data["tgt"].items()},
         )
         _logger.info("Saved %s", npz_path)
 
-    # Multi-experiment time series
+    # Phase 4: Multi-experiment time series
     if data_list:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         plot_polar_cap_efd_timeseries(
-            data_list, args.output_dir, args.ssw_date, args.polar_lat_min,
+            data_list,
+            args.output_dir,
+            args.ssw_date,
+            args.polar_lat_min,
         )
 
     print("Analysis complete.")
