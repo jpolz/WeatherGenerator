@@ -55,8 +55,9 @@ _logger = logging.getLogger(__name__)
 
 _ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
-# Model level range considered "stratospheric" (B_k = 0 for levels ≤ 60)
-_STRAT_LEVEL_MAX = 60
+# Default model levels for polar-cap temperature (≈ 2.5, 10, 28, 50 hPa).
+# Override with --t-channels to use a different set.
+_DEFAULT_T_LEVELS = [19, 29, 40, 48]
 
 # Fallback for ERA5pl streams
 _T_CHANNELS_PL = ["t_10", "t_50"]
@@ -102,7 +103,9 @@ def extract_polar_cap_temperature(
     ``min_latitude``, ``n_points``; or ``None`` if no temperature channels
     are available.
     """
-    _logger.info("%s: extracting polar cap temperature (lat≥%.1f°N)…", label, min_latitude)
+    _logger.info(
+        "%s: extracting polar cap temperature (lat≥%.1f°N)…", label, min_latitude
+    )
 
     with open_validation(zarr_path) as zio:
         stream_name = get_stream(zio)
@@ -114,21 +117,7 @@ def extract_polar_cap_temperature(
         if t_channels_override is not None:
             candidates = t_channels_override
         elif stream_name == "ERA5ml":
-            # Auto-detect all t channels at stratospheric model levels (B_k ≈ 0)
-            def _is_strat_t(ch: str) -> bool:
-                if not ch.startswith("t_"):
-                    return False
-                try:
-                    return int(ch.split("_", 1)[1]) <= _STRAT_LEVEL_MAX
-                except ValueError:
-                    return False
-
-            # Sort by ascending model level number (descending pressure → top-down)
-            strat_t_channels = sorted(
-                [ch for ch in channels if _is_strat_t(ch)],
-                key=lambda c: int(c.split("_", 1)[1]),
-            )
-            candidates = strat_t_channels if strat_t_channels else ["t_29", "t_30"]
+            candidates = [f"t_{lv}" for lv in _DEFAULT_T_LEVELS]
         else:
             candidates = _T_CHANNELS_PL
 
@@ -363,7 +352,7 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help=(
             "Explicit temperature channels to plot (e.g. t_29 t_51 t_5).  "
-            "Default: all stratospheric t channels auto-detected from the zarr stream."
+            "Default: t_19/t_29/t_40/t_48 (≈ 2.5, 10, 28, 50 hPa)."
         ),
     )
     parser.add_argument(
@@ -392,7 +381,10 @@ def main(argv: list[str] | None = None) -> None:
             continue
 
         data = extract_polar_cap_temperature(
-            zarr_path, label, args.min_latitude, sample,
+            zarr_path,
+            label,
+            args.min_latitude,
+            sample,
             t_channels_override=args.t_channels,
         )
 

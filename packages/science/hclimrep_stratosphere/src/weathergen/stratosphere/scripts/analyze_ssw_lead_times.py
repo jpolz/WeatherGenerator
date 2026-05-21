@@ -38,17 +38,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from weathergen.stratosphere.config import load_validations_config
 from weathergen.stratosphere.diagnostics import detect_ssw_reversal
-from weathergen.stratosphere.io import (
-    convert_times_to_datetime,
-    find_latitude_indices,
-    get_channels,
-    get_coords,
-    get_forecast_steps,
-    get_stream,
-    load_step,
-    open_validation,
-)
 from weathergen.stratosphere.levels import channel_pressure
+from weathergen.stratosphere.scripts.analyze_polar_vortex import extract_zonal_wind
 
 _logger = logging.getLogger(__name__)
 
@@ -85,60 +76,27 @@ def extract_run(
     """
     Extract zonal mean u-wind for a single channel from one validation zarr.
 
-    Args:
-        zarr_path:       Path to the ``.zarr`` store.
-        label:           Human-readable label for logging.
-        channel:         Channel name (e.g. ``'u_30'``).
-        sample:          Ensemble member index (default 0).
-        target_latitude: Latitude for zonal mean (default 60°N).
-
-    Returns:
-        Dict with keys ``label``, ``channel``, ``sample``, ``predictions``,
-        ``targets``, ``datetimes``; or ``None`` on failure.
+    Thin wrapper around :func:`~analyze_polar_vortex.extract_zonal_wind` that
+    returns a flat dict (``predictions`` / ``targets`` as top-level arrays)
+    as expected by the skill-metric helpers in this module.
     """
-    _logger.info("Loading %s (sample %d) …", label, sample)
-
-    with open_validation(zarr_path) as zio:
-        stream = get_stream(zio)
-        steps = get_forecast_steps(zio)
-        channels = get_channels(zio, stream, sample)
-        coords = get_coords(zio, stream, sample)
-
-        if channel not in channels:
-            _logger.warning(
-                "Channel '%s' not found in %s. Available: %s",
-                channel,
-                label,
-                [c for c in channels if c.startswith(channel.split("_")[0] + "_")],
-            )
-            return None
-
-        ch_idx = channels.index(channel)
-        lat_idx = find_latitude_indices(coords, target_latitude)
-
-        preds: list[float] = []
-        targets: list[float] = []
-        times_list = []
-
-        for step in steps:
-            pred, tgt, times = load_step(zio, stream, step, sample)
-            preds.append(float(np.mean(pred[lat_idx, ch_idx, 0])))
-            tgt_slice = (
-                tgt[lat_idx, ch_idx, 0] if tgt.ndim == 3 else tgt[lat_idx, ch_idx]
-            )
-            targets.append(float(np.mean(tgt_slice)))
-            times_list.append(times[0])
-
-    datetimes = convert_times_to_datetime(np.array(times_list))
-    _logger.info("  %d steps, %s → %s", len(steps), datetimes[0], datetimes[-1])
-
+    data = extract_zonal_wind(
+        zarr_path,
+        label,
+        channels_override=[channel],
+        sample=sample,
+        target_latitude=target_latitude,
+    )
+    if data is None or channel not in data["channels"]:
+        return None
+    ch_data = data["channels"][channel]
     return {
-        "label": label,
+        "label": data["label"],
         "channel": channel,
-        "sample": sample,
-        "predictions": np.array(preds),
-        "targets": np.array(targets),
-        "datetimes": datetimes,
+        "sample": data["sample"],
+        "predictions": ch_data["predictions"],
+        "targets": ch_data["targets"],
+        "datetimes": data["datetimes"],
     }
 
 

@@ -280,15 +280,21 @@ def extract_qg_tem(
     label: str,
     sample: int = 0,
     lat_width: float = 2.5,
+    lead_days: int = 0,
+    color: str = "C0",
+    ssw_date: datetime = SSW_DATE,
 ) -> dict[str, Any] | None:
     """
     Extract and compute QG-TEM diagnostics for every forecast step.
 
     Returns a dict with keys:
-        ``label``, ``datetimes``, ``pressures_hpa``, ``lat_centres``,
+        ``label``, ``lead_days``, ``color``, ``datetimes``, ``days_rel``,
+        ``pressures_hpa``, ``lat_centres``,
         ``pred``: dict of (n_time, n_lats, n_levels) arrays,
         ``tgt``:  dict of (n_time, n_lats, n_levels) arrays.
     ``pred`` and ``tgt`` each contain: ``div_F``, ``v_star``, ``F_phi``, ``F_p``.
+    ``days_rel`` is a float array of days relative to *ssw_date* (negative =
+    before onset, 0 = onset, positive = after).
     """
     _logger.info("%s: extracting QG-TEM diagnostics …", label)
 
@@ -391,9 +397,17 @@ def extract_qg_tem(
         pressures_hpa[-1],
     )
 
+    days_rel = np.array(
+        [(dt - ssw_date).total_seconds() / 86400.0 for dt in datetimes],
+        dtype=np.float64,
+    )
+
     return {
         "label": label,
+        "lead_days": lead_days,
+        "color": color,
         "datetimes": datetimes,
+        "days_rel": days_rel,
         "pressures_hpa": pressures_hpa,
         "lat_centres": lat_centres,
         "pred": pred_acc,
@@ -420,7 +434,6 @@ def _smooth(field: np.ndarray, sigma: float = 1.5) -> np.ndarray:
 
 def _pressure_axis(
     ax: Any,
-    ssw_idx: int | None = None,
     p_range: tuple[float, float] = (0.01, 1000.0),
 ) -> None:
     ax.set_yscale("log")
@@ -431,33 +444,29 @@ def _pressure_axis(
     ax.set_yticklabels([str(p) for p in visible_ticks])
     ax.set_ylabel("Pressure (hPa)", fontsize=11)
     ax.grid(True, alpha=0.3, linestyle="--")
-    if ssw_idx is not None:
+
+
+def _mark_onset(ax: Any, days_rel: np.ndarray) -> None:
+    """Draw a vertical line at day 0 (SSW onset) if it falls within the data range."""
+    if days_rel[0] <= 0.0 <= days_rel[-1]:
         ax.axvline(
-            ssw_idx,
+            0.0,
             color="red",
             linestyle="--",
             linewidth=1.5,
             alpha=0.7,
-            label="SSW onset",
+            label="SSW onset (day 0)",
         )
 
 
-def _get_ssw_idx(datetimes: list[datetime], ssw_date: datetime) -> int | None:
-    if datetimes[0] <= ssw_date <= datetimes[-1]:
-        return int(
-            np.argmin([abs((dt - ssw_date).total_seconds()) for dt in datetimes])
-        )
-    return None
-
-
-def _time_ticks(ax: Any, datetimes: list[datetime], every: int = 14) -> None:
-    n = len(datetimes)
-    ticks = np.arange(0, n, every)
+def _day_ticks(ax: Any, days_rel: np.ndarray, every: int = 5) -> None:
+    """Set x-ticks at round multiples of *every* days within the data range."""
+    lo = int(np.ceil(days_rel[0] / every)) * every
+    hi = int(np.floor(days_rel[-1] / every)) * every
+    ticks = np.arange(lo, hi + 1, every)
     ax.set_xticks(ticks)
-    ax.set_xticklabels(
-        [datetimes[i].strftime("%m-%d") for i in ticks], rotation=45, fontsize=9
-    )
-    ax.set_xlabel("Date (MM-DD)", fontsize=11)
+    ax.set_xticklabels([str(int(t)) for t in ticks], fontsize=9)
+    ax.set_xlabel("Days relative to SSW onset", fontsize=11)
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +477,6 @@ def _time_ticks(ax: Any, datetimes: list[datetime], every: int = 14) -> None:
 def plot_ep_flux_divergence_hovmoller(
     data: dict[str, Any],
     output_dir: Path,
-    ssw_date: datetime = SSW_DATE,
     lat_range: tuple[float, float] = (20.0, 90.0),
     clim: float = 5.0,
     p_range: tuple[float, float] = (1.0, 100.0),
@@ -479,10 +487,9 @@ def plot_ep_flux_divergence_hovmoller(
     A 2-column figure is produced: prediction (left) and ERA5 target (right).
     """
     label = data["label"]
-    datetimes = data["datetimes"]
+    days_rel = data["days_rel"]
     pressures = data["pressures_hpa"]
     lat_centres = data["lat_centres"]
-    ssw_idx = _get_ssw_idx(datetimes, ssw_date)
 
     # Average over latitude band
     lat_mask = (lat_centres >= lat_range[0]) & (lat_centres <= lat_range[1])
@@ -500,7 +507,7 @@ def plot_ep_flux_divergence_hovmoller(
         # Smooth in time × pressure space to suppress grid-scale noise
         field = _smooth(field, sigma=1.5)
         im = ax.contourf(
-            np.arange(len(datetimes)),
+            days_rel,
             pressures,
             field.T,
             levels=np.linspace(-clim, clim, 21),
@@ -509,15 +516,16 @@ def plot_ep_flux_divergence_hovmoller(
             extend="both",
         )
         ax.contour(
-            np.arange(len(datetimes)),
+            days_rel,
             pressures,
             field.T,
             levels=[0.0],
             colors="k",
             linewidths=0.8,
         )
-        _pressure_axis(ax, ssw_idx, p_range=p_range)
-        _time_ticks(ax, datetimes)
+        _pressure_axis(ax, p_range=p_range)
+        _mark_onset(ax, days_rel)
+        _day_ticks(ax, days_rel)
         ax.set_title(
             f"{label}  {title}\n∇·F ({lat_range[0]:.0f}–{lat_range[1]:.0f}°N mean)",
             fontsize=12,
@@ -545,7 +553,6 @@ def plot_ep_flux_divergence_hovmoller(
 def plot_ep_flux_vectors(
     data: dict[str, Any],
     output_dir: Path,
-    ssw_date: datetime = SSW_DATE,
     clim: float = 3.0,
     lat_range: tuple[float, float] = (0.0, 90.0),
     p_range: tuple[float, float] = (1.0, 100.0),
@@ -673,7 +680,6 @@ def plot_ep_flux_vectors(
 def plot_v_residual_hovmoller(
     data: dict[str, Any],
     output_dir: Path,
-    ssw_date: datetime = SSW_DATE,
     lat_range: tuple[float, float] = (50.0, 80.0),
     clim: float = 0.3,
     p_range: tuple[float, float] = (1.0, 100.0),
@@ -682,10 +688,8 @@ def plot_v_residual_hovmoller(
     Hovmöller (time × pressure) of residual meridional velocity v*.
     """
     label = data["label"]
-    datetimes = data["datetimes"]
     pressures = data["pressures_hpa"]
     lat_centres = data["lat_centres"]
-    ssw_idx = _get_ssw_idx(datetimes, ssw_date)
 
     lat_mask = (lat_centres >= lat_range[0]) & (lat_centres <= lat_range[1])
     if not lat_mask.any():
@@ -695,11 +699,13 @@ def plot_v_residual_hovmoller(
     fig, axes = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
     norm = TwoSlopeNorm(vmin=-clim, vcenter=0.0, vmax=clim)
 
+    days_rel = data["days_rel"]
+
     for ax, key, title in zip(axes, ("pred", "tgt"), ("Prediction", "ERA5 Target")):
         field = np.nanmean(data[key]["v_star"][:, lat_mask, :], axis=1)
         field = _smooth(field, sigma=1.5)
         im = ax.contourf(
-            np.arange(len(datetimes)),
+            days_rel,
             pressures,
             field.T,
             levels=np.linspace(-clim, clim, 21),
@@ -708,15 +714,16 @@ def plot_v_residual_hovmoller(
             extend="both",
         )
         ax.contour(
-            np.arange(len(datetimes)),
+            days_rel,
             pressures,
             field.T,
             levels=[0.0],
             colors="k",
             linewidths=0.8,
         )
-        _pressure_axis(ax, ssw_idx, p_range=p_range)
-        _time_ticks(ax, datetimes)
+        _pressure_axis(ax, p_range=p_range)
+        _mark_onset(ax, days_rel)
+        _day_ticks(ax, days_rel)
         ax.set_title(
             f"{label}  {title}\nv* residual ({lat_range[0]:.0f}–{lat_range[1]:.0f}°N mean)",
             fontsize=12,
@@ -757,15 +764,20 @@ def plot_polar_cap_efd_timeseries(
     if not data_list:
         return
 
-    colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628"]
     fig, ax = plt.subplots(figsize=(13, 5))
 
-    for color_idx, data in enumerate(data_list):
+    # Draw ERA5 target once using the run with the longest precursor window
+    # (smallest days_rel[0], i.e. earliest initialization).
+    era5_drawn = False
+    data_sorted = sorted(data_list, key=lambda d: d["days_rel"][0])
+
+    for data in data_sorted:
         label = data["label"]
-        datetimes = data["datetimes"]
+        days_rel = data["days_rel"]
         lat_centres = data["lat_centres"]
         pressures = data["pressures_hpa"]
-        color = colors[color_idx % len(colors)]
+        color = data["color"]
+        lead_days = data["lead_days"]
 
         lat_mask = lat_centres >= polar_lat_min
         p_mask = (pressures >= pressure_range_hpa[0]) & (
@@ -775,39 +787,50 @@ def plot_polar_cap_efd_timeseries(
         if not lat_mask.any() or not p_mask.any():
             continue
 
-        for key, ls, alpha, suffix in (
-            ("pred", "-", 0.9, "pred"),
-            ("tgt", "--", 0.6, "ERA5"),
-        ):
-            series = np.nanmean(
-                data[key]["div_F"][:, lat_mask, :][:, :, p_mask],
+        # Prediction line — colored by lead time
+        pred_series = np.nanmean(
+            data["pred"]["div_F"][:, lat_mask, :][:, :, p_mask],
+            axis=(1, 2),
+        )
+        ax.plot(
+            days_rel,
+            pred_series,
+            color=color,
+            linestyle="-",
+            linewidth=1.5,
+            alpha=0.85,
+            label=f"t{lead_days:02d}d pred",
+        )
+
+        # ERA5 target — draw only once (all runs share the same ERA5 reality;
+        # use the longest run to cover the widest window).
+        if not era5_drawn:
+            tgt_series = np.nanmean(
+                data["tgt"]["div_F"][:, lat_mask, :][:, :, p_mask],
                 axis=(1, 2),
             )
             ax.plot(
-                datetimes,
-                series,
-                color=color,
-                linestyle=ls,
-                linewidth=2.0,
-                alpha=alpha,
-                label=f"{label} {suffix}",
+                days_rel,
+                tgt_series,
+                color="k",
+                linestyle="-",
+                linewidth=2.5,
+                alpha=0.9,
+                label="ERA5",
+                zorder=10,
             )
+            era5_drawn = True
 
-    ssw_in_range = any(
-        d["datetimes"][0] <= ssw_date <= d["datetimes"][-1] for d in data_list
+    ax.axvline(
+        0.0,
+        color="red",
+        linestyle="-.",
+        linewidth=1.8,
+        alpha=0.7,
+        label="SSW onset (day 0)",
     )
-    if ssw_in_range:
-        ax.axvline(
-            ssw_date,
-            color="red",
-            linestyle="-.",
-            linewidth=1.8,
-            alpha=0.7,
-            label=f"SSW onset ({ssw_date.strftime('%b %d, %Y')})",
-        )
-
     ax.axhline(0.0, color="k", linewidth=0.8, alpha=0.5)
-    ax.set_xlabel("Date", fontsize=12)
+    ax.set_xlabel("Days relative to SSW onset", fontsize=12)
     ax.set_ylabel("∇·F  (m s⁻¹ day⁻¹)", fontsize=12)
     ax.set_title(
         f"Polar cap (≥{polar_lat_min:.0f}°N, "
@@ -815,9 +838,8 @@ def plot_polar_cap_efd_timeseries(
         fontsize=13,
         fontweight="bold",
     )
-    ax.legend(loc="best", fontsize=9, ncol=2)
+    ax.legend(loc="best", fontsize=8, ncol=4)
     ax.grid(True, alpha=0.3)
-    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
     plt.tight_layout()
     out = output_dir / "polar_cap_efd_timeseries.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -825,40 +847,7 @@ def plot_polar_cap_efd_timeseries(
     plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
-# Date alignment
-# ---------------------------------------------------------------------------
-
-
-def _align_date_range(data_list: list[dict[str, Any]]) -> None:
-    """
-    Trim all entries in *data_list* to their common calendar date range (in-place).
-
-    Ensures that per-experiment Hovmöller and time-mean plots all cover the same
-    calendar period, so that ERA5 target panels are identical across lead times
-    and predictions are averaged over the same window.
-    """
-    if len(data_list) <= 1:
-        return
-
-    start = max(d["datetimes"][0] for d in data_list)
-    end = min(d["datetimes"][-1] for d in data_list)
-    if start > end:
-        _logger.warning(
-            "No overlapping date range across experiments — skipping alignment."
-        )
-        return
-
-    _logger.info("Aligning all experiments to common period %s – %s", start, end)
-    diag_keys = ("div_F", "v_star", "F_phi", "F_p", "u_bar")
-    for data in data_list:
-        dts = data["datetimes"]
-        mask = np.array([start <= dt <= end for dt in dts])
-        data["datetimes"] = [dt for dt, m in zip(dts, mask) if m]
-        for split in ("pred", "tgt"):
-            for k in diag_keys:
-                if k in data[split]:
-                    data[split][k] = data[split][k][mask]
+# (date alignment removed — plots now use onset-relative days_rel axis)
 
 
 # ---------------------------------------------------------------------------
@@ -939,30 +928,43 @@ def main(argv: list[str] | None = None) -> None:
     print("=" * 60)
 
     cfg = load_validations_config(args.validations_config)
-    run_specs = [(label, spec["id"], spec["sample"]) for label, spec in cfg.items()]
+    run_specs = [
+        (
+            label,
+            spec["id"],
+            spec.get("sample", 0),
+            spec.get("lead_days", 0),
+            spec.get("color", "C0"),
+        )
+        for label, spec in cfg.items()
+    ]
 
     data_list: list[dict[str, Any]] = []
 
-    # Phase 1: Extract all diagnostics
-    for label, run_id, sample in run_specs:
+    # Phase 1: Extract all diagnostics (each run keeps its own onset-relative axis)
+    for label, run_id, sample, lead_days, color in run_specs:
         zarr_path = args.data_dir / run_id / _ZARR_FNAME
 
         if not zarr_path.exists():
             _logger.warning("Store not found, skipping %s: %s", label, zarr_path)
             continue
 
-        data = extract_qg_tem(zarr_path, label, sample, lat_width=args.lat_width)
+        data = extract_qg_tem(
+            zarr_path,
+            label,
+            sample,
+            lat_width=args.lat_width,
+            lead_days=lead_days,
+            color=color,
+            ssw_date=args.ssw_date,
+        )
         if data is None:
             _logger.warning("Skipping %s — extraction failed.", label)
             continue
 
         data_list.append(data)
 
-    # Phase 2: Align all experiments to their common calendar date range so that
-    # ERA5 target panels are identical across lead times.
-    _align_date_range(data_list)
-
-    # Phase 3: Per-experiment plots (over the aligned date range)
+    # Phase 2: Per-experiment plots (each on its own onset-relative time axis)
     for data in data_list:
         label = data["label"]
         exp_dir = args.output_dir / label
@@ -972,16 +974,11 @@ def main(argv: list[str] | None = None) -> None:
         plot_ep_flux_divergence_hovmoller(
             data,
             exp_dir,
-            args.ssw_date,
             clim=args.clim_divF,
             p_range=p_range,
         )
-        plot_ep_flux_vectors(
-            data, exp_dir, args.ssw_date, clim=args.clim_divF, p_range=p_range
-        )
-        plot_v_residual_hovmoller(
-            data, exp_dir, args.ssw_date, clim=args.clim_vstar, p_range=p_range
-        )
+        plot_ep_flux_vectors(data, exp_dir, clim=args.clim_divF, p_range=p_range)
+        plot_v_residual_hovmoller(data, exp_dir, clim=args.clim_vstar, p_range=p_range)
 
         # Save numpy archive
         npz_path = exp_dir / "qg_tem_diagnostics.npz"
