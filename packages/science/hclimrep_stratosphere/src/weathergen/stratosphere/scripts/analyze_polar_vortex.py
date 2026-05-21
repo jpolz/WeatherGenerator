@@ -209,13 +209,13 @@ def extract_zonal_wind(
     preds_np = {ch: np.array(preds_by_ch[ch]) for ch in available}
     targets_np = {ch: np.array(targets_by_ch[ch]) for ch in available}
 
+    # Always store absolute values so that detect_ssw_reversal (u < 0 criterion)
+    # works correctly.  Anomalies are kept separately for optional plotting.
+    clim_means: dict[str, np.ndarray] = {}
     if climatology_path is not None:
         clim_means = load_climatology_zonal_mean(
             climatology_path, list(available.keys()), datetimes, target_latitude
         )
-        for ch in available:
-            preds_np[ch] = preds_np[ch] - clim_means[ch]
-            targets_np[ch] = targets_np[ch] - clim_means[ch]
 
     return {
         "label": label,
@@ -226,6 +226,15 @@ def extract_zonal_wind(
             ch: {
                 "predictions": preds_np[ch],
                 "targets": targets_np[ch],
+                # anomaly arrays present only when climatology was supplied
+                **(
+                    {
+                        "pred_anomaly": preds_np[ch] - clim_means[ch],
+                        "tgt_anomaly": targets_np[ch] - clim_means[ch],
+                    }
+                    if ch in clim_means
+                    else {}
+                ),
             }
             for ch in available
         },
@@ -240,18 +249,21 @@ def extract_zonal_wind(
 # ---------------------------------------------------------------------------
 
 
-def _merge_targets(data_list: list[dict[str, Any]], ch: str) -> tuple[list[datetime], list[float]]:
+def _merge_targets(
+    data_list: list[dict[str, Any]], ch: str, use_anomaly: bool = False
+) -> tuple[list[datetime], list[float]]:
     """
     Merge ERA5 target time series from multiple runs into one.
 
-    Runs share the same underlying ERA5 data where their time windows overlap,
-    so duplicates are simply deduplicated (first-seen value is kept).
+    Uses anomaly arrays when *use_anomaly* is True, otherwise absolute values.
     """
     seen: dict[datetime, float] = {}
     for d in data_list:
         if ch not in d["channels"]:
             continue
-        for dt, val in zip(d["datetimes"], d["channels"][ch]["targets"], strict=False):
+        ch_data = d["channels"][ch]
+        vals = ch_data.get("tgt_anomaly", ch_data["targets"]) if use_anomaly else ch_data["targets"]
+        for dt, val in zip(d["datetimes"], vals, strict=False):
             if dt not in seen:
                 seen[dt] = val
     if not seen:
@@ -265,15 +277,19 @@ def plot_zonal_wind_comparison(
     output_dir: Path,
     ssw_date: datetime = SSW_DATE,
     event_tag: str = "",
+    use_anomaly: bool = False,
 ) -> None:
     """
     Plot zonal mean u-wind time series: one panel with all forecasts and a
     single merged ERA5 target line.
 
     Args:
-        data_list:  List of dicts returned by :func:`extract_zonal_wind`.
-        output_dir: Directory for saved figures.
-        ssw_date:   Reference SSW date for vertical line.
+        data_list:   List of dicts returned by :func:`extract_zonal_wind`.
+        output_dir:  Directory for saved figures.
+        ssw_date:    Reference SSW date for vertical line.
+        use_anomaly: Plot climatology anomalies instead of absolute values.
+                     Requires that ``extract_zonal_wind`` was called with a
+                     ``climatology_path``.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -292,16 +308,22 @@ def plot_zonal_wind_comparison(
             if ch not in d["channels"]:
                 continue
             color = d.get("color") or fallback_colors[i % len(fallback_colors)]
+            ch_data = d["channels"][ch]
+            plot_vals = (
+                ch_data.get("pred_anomaly", ch_data["predictions"])
+                if use_anomaly
+                else ch_data["predictions"]
+            )
             ax.plot(
                 d["datetimes"],
-                d["channels"][ch]["predictions"],
+                plot_vals,
                 color=color,
                 lw=2,
                 label=d["label"],
             )
 
         # Single merged ERA5 target line
-        tgt_times, tgt_vals = _merge_targets(data_list, ch)
+        tgt_times, tgt_vals = _merge_targets(data_list, ch, use_anomaly=use_anomaly)
         if tgt_times:
             ax.plot(tgt_times, tgt_vals, color="k", lw=2, ls="--", label="ERA5")
 
@@ -310,9 +332,8 @@ def plot_zonal_wind_comparison(
         if all_dates and min(all_dates) <= ssw_date <= max(all_dates):
             ax.axvline(ssw_date, color="red", ls="-.", lw=1.5, alpha=0.7, label="SSW date")
 
-        is_anomaly = any(d.get("is_anomaly") for d in data_list)
-        ylabel = "u-wind anomaly (m/s)" if is_anomaly else "u-wind (m/s)"
-        title_suffix = " anomaly" if is_anomaly else ""
+        ylabel = "u-wind anomaly (m/s)" if use_anomaly else "u-wind (m/s)"
+        title_suffix = " anomaly" if use_anomaly else ""
         ax.set_ylabel(ylabel)
         ax.set_title(f"Zonal mean u{title_suffix} at 60°N — {ch}", fontweight="bold")
         ax.grid(True, alpha=0.3)
@@ -321,7 +342,8 @@ def plot_zonal_wind_comparison(
 
         plt.tight_layout()
         tag = event_tag or ssw_date.strftime("%b%Y").lower()
-        out = output_dir / f"zonal_wind_60N_{ch}_{tag}.png"
+        anom_suffix = "_anomaly" if use_anomaly else ""
+        out = output_dir / f"zonal_wind_60N_{ch}_{tag}{anom_suffix}.png"
         fig.savefig(out, dpi=150, bbox_inches="tight")
         plt.close(fig)
         _logger.info("Saved %s", out)
@@ -393,6 +415,10 @@ def main(argv: list[str] | None = None) -> None:
             parts = stem.split("_", 1)
             event_tag = parts[1] if len(parts) == 2 else stem
         plot_zonal_wind_comparison(all_data, args.output_dir, event_tag=event_tag)
+        if any(d.get("is_anomaly") for d in all_data):
+            plot_zonal_wind_comparison(
+                all_data, args.output_dir, event_tag=event_tag, use_anomaly=True
+            )
 
 
 if __name__ == "__main__":
