@@ -30,7 +30,7 @@
 #   --help               Show this help
 # ============================================================================
 #SBATCH --account=hclimrep
-#SBATCH --time=0-04:00:00
+#SBATCH --time=0-23:59:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12

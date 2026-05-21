@@ -4,8 +4,8 @@
 #
 # Submit SSW validation inference jobs for standardised lead times relative to each event.
 #
-# Lead times: t15d, t10d, t5d, t0d (days before the SSW central warming date)
-# Rollout:    240 steps × 6h = 60 days (covers ≥45 days post-SSW from any lead)
+# Lead times: t0d–t30d daily (days before the SSW central warming date)
+# Rollout:    computed per lead to cover ≥45 days post-SSW
 #
 # Usage:
 #   ./submit_ssw_validation.sh [options]
@@ -78,26 +78,22 @@ declare -A MODELS=(
     ["hro273du"]="hro273du strato_ft 6h + pl decoder"
 )
 
-# SSW central warming dates
+# SSW central warming dates (feb2016 is a no-SSW control, same calendar anchor as feb2018)
 declare -A SSW_DATES=(
     ["feb2018"]="2018-02-12"
+    ["feb2016"]="2016-02-12"
     ["jan2013"]="2013-01-06"
     ["jan2019"]="2019-01-02"
     ["jan2021"]="2021-01-05"
 )
 
-# Standardised lead offsets in days before SSW date
-declare -A LEAD_OFFSETS=(
-    ["t15d"]=15
-    ["t10d"]=10
-    ["t5d"]=5
-    ["t0d"]=0
-)
+# Lead range: daily increments (days before SSW central warming date)
+LEAD_MIN=0
+LEAD_MAX=30
+# Days of forecast coverage required beyond the SSW date
+POST_SSW_DAYS=45
 
 SAMPLES=1
-# 240 steps × 6h = 60 days rollout → ≥45 days post-SSW even from t15d init
-FSTEPS_6H=180
-FSTEPS_24H=45
 
 # ============================================================================
 # HELPERS
@@ -185,13 +181,21 @@ for model_key in "${!MODELS[@]}"; do
     [[ -n "$SPECIFIC_MODEL" && "$model_key" != "$SPECIFIC_MODEL" ]] && continue
 
     read -r run_id model_name timestep <<< "${MODELS[$model_key]}"
-    [[ "$timestep" == "6h" ]] && fsteps=$FSTEPS_6H || fsteps=$FSTEPS_24H
+    step_h=6; [[ "$timestep" == "24h" ]] && step_h=24
 
-    for lead_key in "${!LEAD_OFFSETS[@]}"; do
+    # Leads already submitted — skip to avoid duplicates (event-specific)
+    declare -A SKIP_LEADS=()
+    if [[ "$SPECIFIC_EVENT" == "feb2018" ]]; then
+        SKIP_LEADS=([t0d]=1 [t5d]=1 [t10d]=1 [t15d]=1)
+    fi
+
+    for offset in $(seq "$LEAD_MIN" "$LEAD_MAX"); do
+        lead_key="t${offset}d"
         [[ -n "$SPECIFIC_LEAD" && "$lead_key" != "$SPECIFIC_LEAD" ]] && continue
+        [[ -n "${SKIP_LEADS[$lead_key]+x}" ]] && { echo "Skipping ${lead_key} (already submitted)"; continue; }
 
-        offset="${LEAD_OFFSETS[$lead_key]}"
         init_date=$(date_offset "$ssw_date" "$offset")
+        fsteps=$(( (offset + POST_SSW_DAYS) * 24 / step_h ))
 
         submit_validation "$run_id" "$model_name" "$lead_key" "$init_date" "$fsteps" "$timestep"
         TOTAL_SUBMITTED=$((TOTAL_SUBMITTED + 1))

@@ -9,36 +9,221 @@
 
 validations:
 
+  # Colors: blue (t0d, short lead) → red (t30d, long lead) via RdYlBu colormap
 
-
-  # T–0d: init ~12 Feb 2018, 180 fsteps
   bg03rub9_t0d:
     id: p69gapsx
     sample: 0
     group: "bg03rub9"
     lead_days: 0
-    color: "#984ea3" # purple
-  
-  # T–5d: init ~7 Feb 2018, 180 fsteps
+    color: "#313695"
+
+  bg03rub9_t1d:
+    id: mw9u7zf1
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 1
+    color: "#374a9f"
+
+  bg03rub9_t2d:
+    id: bwxt4agf
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 2
+    color: "#3e60aa"
+
+  bg03rub9_t3d:
+    id: zptueg75
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 3
+    color: "#4574b3"
+
+  bg03rub9_t4d:
+    id: safvul4m
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 4
+    color: "#5588be"
+
   bg03rub9_t5d:
     id: dgnpqy4m
     sample: 0
     group: "bg03rub9"
     lead_days: 5
-    color: "#4daf4a" # green
+    color: "#6399c7"
 
-  # T–10d: init ~2 Feb 2018, 180 fsteps
+  bg03rub9_t6d:
+    id: bgi064v2
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 6
+    color: "#74add1"
+
+  bg03rub9_t7d:
+    id: bmjz1psw
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 7
+    color: "#85bbd9"
+
+  bg03rub9_t8d:
+    id: w58fym17
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 8
+    color: "#99cae1"
+
+  bg03rub9_t9d:
+    id: my14lekp
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 9
+    color: "#aad8e9"
+
   bg03rub9_t10d:
     id: gv6bxsfu
     sample: 0
     group: "bg03rub9"
     lead_days: 10
-    color: "#377eb8" # blue
+    color: "#bde2ee"
 
-  # T–15d: init ~28 Jan 2018, 180 fsteps
+  bg03rub9_t11d:
+    id: r8jkgm7d
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 11
+    color: "#cdeaf3"
+
+  bg03rub9_t12d:
+    id: mgm1l2ij
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 12
+    color: "#e0f3f8"
+
+  bg03rub9_t13d:
+    id: pifgpnbj
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 13
+    color: "#eaf7e6"
+
+  bg03rub9_t14d:
+    id: n1xhtins
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 14
+    color: "#f5fbd2"
+
   bg03rub9_t15d:
     id: ioqlymze
     sample: 0
     group: "bg03rub9"
     lead_days: 15
-    color: "#e41a1c" # red
+    color: "#feffc0"
+
+  bg03rub9_t16d:
+    id: wnmd5frc
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 16
+    color: "#fff5af"
+
+  bg03rub9_t17d:
+    id: htja8muv
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 17
+    color: "#feea9f"
+
+  bg03rub9_t18d:
+    id: utzwasfi
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 18
+    color: "#fee090"
+
+  bg03rub9_t19d:
+    id: yxzpchn6
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 19
+    color: "#fece7f"
+
+  bg03rub9_t20d:
+    id: cy9mtirg
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 20
+    color: "#fdbf71"
+
+  bg03rub9_t21d:
+    id: jn2m4dzi
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 21
+    color: "#fdad60"
+
+  bg03rub9_t22d:
+    id: y4mqyv0j
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 22
+    color: "#fa9857"
+
+  bg03rub9_t23d:
+    id: bizaqg85
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 23
+    color: "#f7814c"
+
+  bg03rub9_t24d:
+    id: i5fqlm6h
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 24
+    color: "#f46d43"
+
+  bg03rub9_t25d:
+    id: feawuf72
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 25
+    color: "#ea5739"
+
+  bg03rub9_t26d:
+    id: u012jyet
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 26
+    color: "#e14430"
+
+  bg03rub9_t27d:
+    id: wod7wun4
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 27
+    color: "#d62f27"
+
+  bg03rub9_t28d:
+    id: usgwxjdz
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 28
+    color: "#c62027"
+
+  bg03rub9_t29d:
+    id: nqpsun87
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 29
+    color: "#b50f26"
+
+  bg03rub9_t30d:
+    id: d0m5qyhu
+    sample: 0
+    group: "bg03rub9"
+    lead_days: 30
+    color: "#a50026"
