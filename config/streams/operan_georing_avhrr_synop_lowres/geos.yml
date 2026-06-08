@@ -11,16 +11,17 @@ METEOSAT_SEVIRI_IR :
   type : obs
   stream_id : 10
   filenames : ['observations-file-2014-2024-seviri-o256-wegen-v3.zarr']
-  # filenames : ['observations-file-2014-2024-seviri-h512-v5.zarr']
   geoinfo_channels : ['cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day', 'zenith', 'cos_sza']
   loss_weight : 1.0
+  location_weight : cosine_latitude
   masking_override :
     model_input :
+      masking_strategy: "random"
       masking_strategy_config :
-        rate: 0.5
+        rate: 1.0
   token_size : 1024
   tokenize_spacetime : False
-  max_num_targets: 262144
+  max_num_targets: 131072
   forcing: True
   embed : 
     net : transformer
@@ -43,16 +44,17 @@ GOES_ABI_IR :
   type : obs
   stream_id : 11
   filenames : ['observations-file-2017-2024-abi-goes16-IR-o256-v2.zarr']
-  # filenames : ['observations-file-2017-2024-abi-goes16-IR-h512-v2.zarr']
   geoinfo_channels : ['cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day','zenith', 'cos_sza']
   loss_weight : 1.0
+  location_weight : cosine_latitude
   masking_override :
     model_input :
+      masking_strategy: "random"
       masking_strategy_config :
-        rate: 0.5
+        rate: 1.0
   token_size : 1024
   tokenize_spacetime : False
-  max_num_targets: 262144
+  max_num_targets: 131072
   forcing: True
   embed : 
     net : transformer
@@ -75,16 +77,17 @@ HIMAWARI_AHI_IR :
   type : obs
   stream_id : 12
   filenames : ['observations-file-2015-2022-himawari8-IR-o256-v1.zarr', 'observations-file-2022-2024-himawari9-IR-o256-v1.zarr']
-  # filenames : ['observations-file-2015-2022-himawari8-IR-h512-v1.zarr', observations-file-2022-2024-himawari9-IR-o256-v1.zarr]
   geoinfo_channels : ['cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day', 'zenith', 'cos_sza']
   loss_weight : 1.0
+  location_weight : cosine_latitude
   masking_override :
     model_input :
+      masking_strategy: "random"
       masking_strategy_config :
-        rate: 0.5
+        rate: 1.0
   token_size : 1024
   tokenize_spacetime : False
-  max_num_targets: 262144
+  max_num_targets: 131072
   forcing: True
   embed : 
     net : transformer
@@ -107,16 +110,18 @@ GOES_ABI_VIS :
   type : obs
   stream_id : 13
   filenames : ['observations-file-2017-2024-abi-goes16-VIS-o256-v2.zarr']
-  # filenames : ['observations-file-2017-2024-abi-goes16-RED-h512-v2.zarr']
-  geoinfo_channels : ['cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day', 'zenith', 'cos_sza']
+  # geoinfo_channels : ['cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day', 'zenith', 'cos_sza']
+  geoinfo_channels : ['zenith']
   loss_weight : 1.0
+  location_weight : cosine_latitude
   masking_override :
     model_input :
+      masking_strategy: "random"
       masking_strategy_config :
-        rate: 0.5
+        rate: 1.0
   token_size : 1024
   tokenize_spacetime : False
-  max_num_targets: 262144
+  max_num_targets: 131072
   forcing: True
   embed : 
     net : transformer
@@ -139,16 +144,18 @@ HIMAWARI_AHI_VIS :
   type : obs
   stream_id : 14
   filenames : ['observations-file-2015-2022-himawari8-VIS-o256-v1.zarr', 'observations-file-2022-2024-himawari9-VIS-o256-v1.zarr']
-  # filenames : ['observations-file-2015-2022-himawari8-IR-h512-v1.zarr', observations-file-2022-2024-himawari9-IR-o256-v1.zarr]
-  geoinfo_channels : ['cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day', 'zenith', 'cos_sza']
+  # geoinfo_channels : ['cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day', 'zenith', 'cos_sza']
+  geoinfo_channels : ['zenith']
   loss_weight : 1.0
+  location_weight : cosine_latitude
   masking_override :
     model_input :
+      masking_strategy: "random"
       masking_strategy_config :
-        rate: 0.5
+        rate: 1.0
   token_size : 1024
   tokenize_spacetime : False
-  max_num_targets: 262144
+  max_num_targets: 131072
   forcing: True
   embed :
     net : transformer
