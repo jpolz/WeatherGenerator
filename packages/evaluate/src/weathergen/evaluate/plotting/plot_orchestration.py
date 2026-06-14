@@ -358,6 +358,8 @@ def _plot_score_maps_per_stream(
     if not valid:
         return
 
+    ens_metrics = {m for m, r in valid if "ens" in r.dims}
+
     plot_metrics = xr.concat(
         [r for _, r in valid],
         dim="metric",
@@ -370,7 +372,7 @@ def _plot_score_maps_per_stream(
         metric=[m for m, _ in valid],
     ).compute()
 
-    if "ens" in preds.dims:
+    if "ens" in plot_metrics.dims:
         plot_metrics["ens"] = preds.ens
 
     has_ens = "ens" in plot_metrics.coords
@@ -378,13 +380,17 @@ def _plot_score_maps_per_stream(
 
     plot_tasks: list[dict] = []
     for metric in plot_metrics.coords["metric"].values:
-        for ens_val in ens_values:
+        metric_ens_values = ens_values if str(metric) in ens_metrics else [None]
+        for ens_val in metric_ens_values:
             tag = "score_maps" + (f"_ens_{ens_val}" if ens_val is not None else "") + f"_{metric}"
             for channel in plot_metrics.coords["channel"].values:
                 sel = {"metric": metric, "channel": channel}
                 if ens_val is not None:
                     sel["ens"] = ens_val
-                data = plot_metrics.sel(**sel).squeeze()
+                data = plot_metrics.sel(**sel)
+                if ens_val is None and "ens" in data.dims:
+                    data = data.isel(ens=0, drop=True)
+                data = data.squeeze()
                 title = f"{metric} - {channel}: fstep {fstep}" + (
                     f", ens {ens_val}" if ens_val is not None else ""
                 )
