@@ -373,15 +373,15 @@ def _plot_score_maps_per_stream(
     ).compute()
 
     if "ens" in plot_metrics.dims:
-        plot_metrics["ens"] = preds.ens
+        plot_metrics = plot_metrics.assign_coords(ens=preds.ens.values)
 
-    has_ens = "ens" in plot_metrics.coords
-    ens_values = plot_metrics.coords["ens"].values if has_ens else [None]
+    all_ens = plot_metrics.coords["ens"].values if "ens" in plot_metrics.dims else [None]
 
     plot_tasks: list[dict] = []
     for metric in plot_metrics.coords["metric"].values:
-        metric_ens_values = ens_values if str(metric) in ens_metrics else [None]
-        for ens_val in metric_ens_values:
+        metric_has_ens = str(metric) in ens_metrics and "ens" in plot_metrics.dims
+        ens_values = all_ens if metric_has_ens else [None]
+        for ens_val in ens_values:
             tag = "score_maps" + (f"_ens_{ens_val}" if ens_val is not None else "") + f"_{metric}"
             for channel in plot_metrics.coords["channel"].values:
                 sel = {"metric": metric, "channel": channel}
