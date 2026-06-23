@@ -186,14 +186,16 @@ def extract_zonal_wind(
 
         lat_indices = find_latitude_indices(coords, target_latitude)
 
-        preds_by_ch: dict[str, list[float]] = {ch: [] for ch in available}
+        preds_by_ch: dict[str, list[np.ndarray]] = {ch: [] for ch in available}
         targets_by_ch: dict[str, list[float]] = {ch: [] for ch in available}
         times_list: list[Any] = []
 
         for step in steps:
             pred, tgt, times = load_step(zio, stream_name, step, sample)
+            pred3 = np.atleast_3d(pred)  # (n_pts, n_ch, n_ens)
             for ch, ch_idx in available.items():
-                preds_by_ch[ch].append(float(np.mean(pred[lat_indices, ch_idx, 0])))
+                # Mean over lat band, keep all ensemble members → (n_ens,)
+                preds_by_ch[ch].append(pred3[lat_indices, ch_idx, :].mean(axis=0))
                 # target may have no ens dim in older stores — handle both shapes
                 tgt_slice = (
                     tgt[lat_indices, ch_idx, 0] if tgt.ndim == 3 else tgt[lat_indices, ch_idx]
@@ -206,7 +208,8 @@ def extract_zonal_wind(
 
     _logger.info("  %d forecast steps, %s → %s", len(steps), datetimes[0], datetimes[-1])
 
-    preds_np = {ch: np.array(preds_by_ch[ch]) for ch in available}
+    # preds_np[ch]: (n_steps, n_ens) — one row per forecast step, one col per ensemble member
+    preds_np = {ch: np.stack(preds_by_ch[ch], axis=0) for ch in available}
     targets_np = {ch: np.array(targets_by_ch[ch]) for ch in available}
 
     # Always store absolute values so that detect_ssw_reversal (u < 0 criterion)
@@ -229,7 +232,8 @@ def extract_zonal_wind(
                 # anomaly arrays present only when climatology was supplied
                 **(
                     {
-                        "pred_anomaly": preds_np[ch] - clim_means[ch],
+                        # clim_means[ch] is (n_steps,); broadcast over ens dim
+                        "pred_anomaly": preds_np[ch] - clim_means[ch][:, None],
                         "tgt_anomaly": targets_np[ch] - clim_means[ch],
                     }
                     if ch in clim_means
@@ -303,7 +307,7 @@ def plot_zonal_wind_comparison(
     for ch in sorted_channels:
         fig, ax = plt.subplots(figsize=(14, 5))
 
-        # One prediction line per run
+        # One prediction line per run (ensemble mean + spread shading when n_ens > 1)
         for i, d in enumerate(data_list):
             if ch not in d["channels"]:
                 continue
@@ -314,13 +318,35 @@ def plot_zonal_wind_comparison(
                 if use_anomaly
                 else ch_data["predictions"]
             )
-            ax.plot(
-                d["datetimes"],
-                plot_vals,
-                color=color,
-                lw=2,
-                label=d["label"],
-            )
+            # plot_vals may be (n_steps,) or (n_steps, n_ens)
+            plot_vals = np.asarray(plot_vals)
+            if plot_vals.ndim == 2 and plot_vals.shape[1] > 1:
+                # ens_mean = plot_vals.mean(axis=1)
+                # ens_min = plot_vals.min(axis=1)
+                # ens_max = plot_vals.max(axis=1)
+                # ax.fill_between(
+                #     d["datetimes"], ens_min, ens_max, color=color, alpha=0.2
+                # )
+                # ax.plot(
+                #     d["datetimes"], ens_mean, color=color, lw=2, label=d["label"]
+                # )
+                for ens_idx in range(plot_vals.shape[1]):
+                    ax.plot(
+                        d["datetimes"],
+                        plot_vals[:, ens_idx],
+                        color=color,
+                        lw=1,
+                        alpha=0.5,
+                        label=f"{d['label']} (ens {ens_idx})" if ens_idx == 0 else None,
+                    )
+            else:
+                ax.plot(
+                    d["datetimes"],
+                    plot_vals.squeeze(),
+                    color=color,
+                    lw=2,
+                    label=d["label"],
+                )
 
         # Single merged ERA5 target line
         tgt_times, tgt_vals = _merge_targets(data_list, ch, use_anomaly=use_anomaly)
@@ -404,7 +430,10 @@ def main(argv: list[str] | None = None) -> None:
         all_data.append(data)
 
         for ch, ch_data in data["channels"].items():
-            pred_ssw = detect_ssw_reversal(ch_data["predictions"], data["datetimes"])
+            pred_arr = np.asarray(ch_data["predictions"])
+            # Use ensemble mean for SSW detection when multiple members are present
+            pred_for_ssw = pred_arr.mean(axis=1) if pred_arr.ndim == 2 else pred_arr
+            pred_ssw = detect_ssw_reversal(pred_for_ssw, data["datetimes"])
             tgt_ssw = detect_ssw_reversal(ch_data["targets"], data["datetimes"])
             _logger.info("%s / %s  pred=%s  target=%s", label, ch, pred_ssw, tgt_ssw)
 

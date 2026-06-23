@@ -27,6 +27,7 @@ from weathergen.datasets.data_reader_base import (
     TIndex,
     check_reader_data,
 )
+from weathergen.train.utils import Stage
 
 _logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class DataReaderIconArt(DataReaderTimestep):
         tw_handler: TimeWindowHandler,
         filename: Path,
         stream_info: dict,
+        stage: Stage | None = None,
     ) -> None:
         """
         ICON-ART data reader for Zarr format datasets
@@ -119,13 +121,10 @@ class DataReaderIconArt(DataReaderTimestep):
             self.temporal_frequency,
         )
 
-        # Compute absolute start/end indices in the dataset based on time window
-        self.start_idx = (tw_handler.t_start - start_ds).astype("timedelta64[D]").astype(
-            int
-        ) * self.mesh_size
-        self.end_idx = (
-            (tw_handler.t_end - start_ds).astype("timedelta64[D]").astype(int) + 1
-        ) * self.mesh_size - 1
+        # Compute absolute start/end indices in the dataset based on the actual dataset cadence.
+        timestep = self.temporal_frequency
+        self.start_idx = int((tw_handler.t_start - start_ds) // timestep) * self.mesh_size
+        self.end_idx = (int((tw_handler.t_end - start_ds) // timestep) + 1) * self.mesh_size - 1
 
         # Sanity check
         assert self.end_idx > self.start_idx, (

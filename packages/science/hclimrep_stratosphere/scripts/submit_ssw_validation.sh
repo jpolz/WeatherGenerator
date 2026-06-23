@@ -39,7 +39,7 @@ SPECIFIC_LEAD=""
 SPECIFIC_EVENT="feb2018"
 STREAM_DIR=""
 
-VALIDATION_SCRIPT="${WG_ROOT}/../WeatherGenerator-private/hpc/juwels_booster/jsc/weathergen_validate_jwb_jpstrat.sh"
+LAUNCH_SCRIPT="${WG_ROOT}/../WeatherGenerator-private/hpc/launch-slurm.py"
 
 # Color codes for output
 GREEN='\033[0;32m'
@@ -74,8 +74,8 @@ done
 
 # Models: key → "run_id label timestep"
 declare -A MODELS=(
-    ["bg03rub9"]="bg03rub9 strato_ft 6h"
-    ["hro273du"]="hro273du strato_ft 6h + pl decoder"
+    ["x1menaw0"]="x1menaw0 strato 6h"
+    ["kzt66ihm"]="kzt66ihm strato 6h latweight"
 )
 
 # SSW central warming dates (feb2016 is a no-SSW control, same calendar anchor as feb2018)
@@ -89,7 +89,7 @@ declare -A SSW_DATES=(
 
 # Lead range: daily increments (days before SSW central warming date)
 LEAD_MIN=0
-LEAD_MAX=30
+LEAD_MAX=20
 # Days of forecast coverage required beyond the SSW date
 POST_SSW_DAYS=45
 
@@ -107,10 +107,6 @@ date_offset() {
 submit_validation() {
     local run_id=$1 model_name=$2 lead_key=$3 init_date=$4 fsteps=$5 timestep=$6
 
-    local job_name="val_${model_name}_${lead_key}_${SPECIFIC_EVENT}"
-    # Human-readable tag stored in general.desc of the output model JSON
-    local desc="${SPECIFIC_EVENT}_${lead_key}_from_${run_id}"
-
     # end_date must cover start_date plus the full forecast horizon so the
     # data reader can load all target timestamps. Compute days needed from
     # fsteps × timestep, then add 2 days buffer.
@@ -120,39 +116,45 @@ submit_validation() {
     local end_date
     end_date=$(date -d "${init_date:0:8} +${days_needed} days" "+%Y%m%d0000")
 
+    local streams_dir="${STREAM_DIR:-config/streams/era5_mlpl_strato_inference}"
+
     echo -e "${BLUE}================================================${NC}"
     echo -e "${GREEN}Submitting: ${model_name} | ${lead_key} | ${SPECIFIC_EVENT}${NC}"
-    echo -e "  From run:  ${run_id}"
-    echo -e "  Desc tag:  ${desc}"
-    echo -e "  Init date: ${init_date}"
-    echo -e "  End date:  ${end_date}"
-    echo -e "  Steps:     ${fsteps} at ${timestep}"
+    echo -e "  From run:   ${run_id}"
+    echo -e "  Init date:  ${init_date}"
+    echo -e "  End date:   ${end_date}"
+    echo -e "  Steps:      ${fsteps} at ${timestep}"
+    echo -e "  Streams:    ${streams_dir}"
     echo -e "${BLUE}================================================${NC}"
 
-    local sbatch_cmd=(
-        sbatch
-        --job-name="${job_name}"
-        --chdir "${WG_ROOT}"
-        --output="${SCRIPT_DIR}/logs/${job_name}.%j.out"
-        --error="${SCRIPT_DIR}/logs/${job_name}.%j.err"
-        "${VALIDATION_SCRIPT}"
-        --run_id     "${run_id}"
-        --samples    "${SAMPLES}"
-        --start_date "${init_date}"
-        --end_date   "${end_date}"
-        --fsteps     "${fsteps}"
-        --desc       "${desc}"
+    local launch_cmd=(
+        "${LAUNCH_SCRIPT}"
+        --stage inference
+        --nodes=1
+        -t 02:00:00
+        --account=weatherai
+        --from-run-id "${run_id}"
+        --no-register
+        --link-venv
+        --options
+            "test_config.start_date=${init_date}"
+            "test_config.end_date=${end_date}"
+            "test_config.output.num_samples=${SAMPLES}"
+            "test_config.samples_per_mini_epoch=${SAMPLES}"
+            "test_config.forecast.num_steps=${fsteps}"
+            "streams_directory=${streams_dir}"
     )
-    [[ -n "${STREAM_DIR}" ]] && sbatch_cmd+=(--stream_dir "${STREAM_DIR}")
 
     if [[ "$DRY_RUN" == true ]]; then
-        echo -e "${YELLOW}[DRY RUN] ${sbatch_cmd[*]}${NC}\n"
+        echo -e "${YELLOW}[DRY RUN] ${launch_cmd[*]}${NC}\n"
     else
-        local job_id
-        job_id=$("${sbatch_cmd[@]}" | awk '{print $NF}')
-        echo -e "${GREEN}✓ SLURM ID: ${job_id}${NC}\n"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') | ${job_id} | ${run_id} | ${model_name} | ${lead_key} | ${init_date} | ${fsteps} | ${desc}" >> "${SCRIPT_DIR}/validation_submissions.log"
-        sleep 1
+        local launch_out
+        launch_out=$("${launch_cmd[@]}" 2>&1)
+        echo "${launch_out}"
+        # Extract generated run_id from launcher output
+        local gen_run_id
+        gen_run_id=$(echo "${launch_out}" | grep -oP '(?<=Using generated run id: )\S+')
+        echo "$(date '+%Y-%m-%d %H:%M:%S') | ${gen_run_id} | ${run_id} | ${model_name} | ${lead_key} | ${init_date} | ${fsteps}" >> "${SCRIPT_DIR}/validation_submissions.log"
     fi
 }
 
@@ -183,11 +185,8 @@ for model_key in "${!MODELS[@]}"; do
     read -r run_id model_name timestep <<< "${MODELS[$model_key]}"
     step_h=6; [[ "$timestep" == "24h" ]] && step_h=24
 
-    # Leads already submitted — skip to avoid duplicates (event-specific)
+    # Leads already submitted — skip to avoid duplicates (add keys to avoid re-submission)
     declare -A SKIP_LEADS=()
-    if [[ "$SPECIFIC_EVENT" == "feb2018" ]]; then
-        SKIP_LEADS=([t0d]=1 [t5d]=1 [t10d]=1 [t15d]=1)
-    fi
 
     for offset in $(seq "$LEAD_MIN" "$LEAD_MAX"); do
         lead_key="t${offset}d"
@@ -213,7 +212,6 @@ else
     echo -e "${GREEN}SUBMISSION COMPLETE — submitted ${TOTAL_SUBMITTED} jobs${NC}"
     echo ""
     echo "Monitor:      squeue -u \$USER"
-    echo "Logs:         ${SCRIPT_DIR}/logs/"
     echo "Submissions:  ${SCRIPT_DIR}/validation_submissions.log"
 fi
 echo -e "${BLUE}=======================================================${NC}"

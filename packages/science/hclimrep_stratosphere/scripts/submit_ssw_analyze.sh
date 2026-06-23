@@ -29,8 +29,8 @@
 #   --devel              Use develbooster partition (short jobs)
 #   --help               Show this help
 # ============================================================================
-#SBATCH --account=hclimrep
-#SBATCH --time=0-23:59:00
+#SBATCH --account=weatherai
+#SBATCH --time=0-11:59:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
@@ -90,22 +90,18 @@ fi
 # Environment setup (only needed when running inside a SLURM job)
 # ---------------------------------------------------------------------------
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then
-    VENV_DIR="${SLURM_SUBMIT_DIR}"
-
     ml --force purge
-    ml use "$OTHERSTAGES"
-    ml Stages/2025
-    ml GCC/13.3.0
-    ml GCCcore/.13.3.0
-    ml OpenMPI/5.0.5
-    ml git/2.45.1
+    ml Stages/2025 GCCcore/.13.3.0 git
     ml Python/3.12.3
+    ml CUDA/12
+    ml NCCL
+    ml git/2.45.1
 
     if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-        if [[ -f "${VENV_DIR}/.venv/bin/activate" ]]; then
-            source "${VENV_DIR}/.venv/bin/activate"
+        if [[ -f ".venv/bin/activate" ]]; then
+            source ".venv/bin/activate"
         else
-            echo "ERROR: .venv not found in ${VENV_DIR}" >&2
+            echo "ERROR: .venv not found in $PWD" >&2
             exit 1
         fi
     fi

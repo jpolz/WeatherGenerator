@@ -19,9 +19,11 @@ ERA5pl :
   stream_id : 1
   source : []
   target : ['u_850', 'v_850', 'q_850', 't_850', 'z_850', 
-            'u_500', 'v_500', 'q_500', 't_500', 'z_500']
+            'u_500', 'v_500', 'q_500', 't_500', 'z_500', 
+            'u_50', 'v_50', 'q_50', 't_50', 'z_50']
   geoinfo_channels : ['lsm', 'slor', 'sdor', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
   loss_weight : 1.
+  location_weight : cosine_latitude
   # location_weight is intentionally omitted to disable latitude weighting
   masking_rate : 0.6
   masking_rate_none : 0.05

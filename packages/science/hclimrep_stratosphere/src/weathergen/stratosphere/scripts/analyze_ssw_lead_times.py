@@ -142,8 +142,21 @@ def load_experiment_group(
 def ensemble_mean_std(
     runs: list[dict[str, Any]], key: str = "predictions"
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return (mean, std) over the samples dimension."""
-    arrays = np.stack([r[key] for r in runs], axis=0)  # (n_samples, time)
+    """Return (mean, std) over the ensemble dimension.
+
+    Handles both:
+    - multiple runs each with 1-D predictions ``(n_steps,)``
+    - one (or more) runs with 2-D predictions ``(n_steps, n_ens)``
+    """
+    members: list[np.ndarray] = []
+    for r in runs:
+        arr = np.asarray(r[key])
+        if arr.ndim == 1:
+            members.append(arr)
+        else:
+            for i in range(arr.shape[1]):
+                members.append(arr[:, i])
+    arrays = np.stack(members, axis=0)  # (total_ens, n_steps)
     return arrays.mean(axis=0), arrays.std(axis=0)
 
 
@@ -227,13 +240,18 @@ def plot_timeseries_by_lead_time(
     fig, axes = plt.subplots(
         len(lead_times), 1, figsize=(14, 4 * len(lead_times)), squeeze=False
     )
-
+    # adjust for ensemble dimension if present
     for ax, lead in zip(axes.flatten(), lead_times):
         runs = lead_groups[lead]
         mean_pred, std_pred = ensemble_mean_std(runs)
         datetimes = runs[0]["datetimes"]
         target = runs[0]["targets"]
         color = runs[0].get("color") or "#377eb8"
+        n_ens = sum(
+            np.asarray(r["predictions"]).shape[1] if np.asarray(r["predictions"]).ndim == 2
+            else 1
+            for r in runs
+        )
 
         ax.fill_between(
             datetimes,
@@ -241,7 +259,7 @@ def plot_timeseries_by_lead_time(
             mean_pred + std_pred,
             color=color,
             alpha=0.25,
-            label=f"Ensemble spread (n={len(runs)})",
+            label=f"Ensemble spread (n={n_ens})",
         )
         ax.plot(
             datetimes, mean_pred, color=color, lw=2.5, label="Prediction (ens. mean)"
