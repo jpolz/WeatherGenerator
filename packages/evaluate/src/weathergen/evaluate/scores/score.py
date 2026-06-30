@@ -674,7 +674,12 @@ class Scores:
 
         return self._mean(np.abs(p - gt))
 
-    def calc_mse(self, p: xr.DataArray, gt: xr.DataArray) -> xr.DataArray:
+    def calc_mse(
+        self,
+        p: xr.DataArray,
+        gt: xr.DataArray,
+        latitude_weights: xr.DataArray | None = None,
+    ) -> xr.DataArray:
         """
         Calculate mean squared error (MSE) of forecast data w.r.t. reference data.
 
@@ -684,6 +689,9 @@ class Scores:
             Forecast data array
         gt: xr.DataArray
             Ground truth data array
+        latitude_weights: xr.DataArray | None
+            Optional latitude weights for area-weighted averaging.
+            If provided, the MSE will be weighted by these values.
         Returns
         -------
         xr.DataArray
@@ -695,17 +703,37 @@ class Scores:
                 "(agg_dims=None)."
             )
 
-        return self._mean(np.square(p - gt))
+        mse = np.square(p - gt)
+        
+        # Apply latitude weighting if provided
+        if latitude_weights is not None:
+            # Broadcast weights to match data dimensions
+            _, broadcasted_weights = xr.broadcast(mse, latitude_weights)
+            # Weighted mean
+            mse_weighted = (mse * broadcasted_weights).mean(dim=self._agg_dims) / \
+                           broadcasted_weights.mean(dim=self._agg_dims)
+            return mse_weighted
+        else:
+            return self._mean(mse)
 
-    def calc_rmse(self, p: xr.DataArray, gt: xr.DataArray) -> xr.DataArray:
+    def calc_rmse(
+        self,
+        p: xr.DataArray,
+        gt: xr.DataArray,
+        latitude_weights: xr.DataArray | None = None,
+    ) -> xr.DataArray:
         """
         Calculate root mean squared error (RMSE) of forecast data w.r.t. reference data
+        
         Parameters
         ----------
         p: xr.DataArray
             Forecast data array
         gt: xr.DataArray
             Ground truth data array
+        latitude_weights: xr.DataArray | None
+            Optional latitude weights for area-weighted averaging.
+            If provided, the RMSE will be weighted by these values.
         Returns
         -------
         xr.DataArray
@@ -718,7 +746,7 @@ class Scores:
                 "(agg_dims=None)."
             )
 
-        rmse = np.sqrt(self.calc_mse(p, gt))
+        rmse = np.sqrt(self.calc_mse(p, gt, latitude_weights=latitude_weights))
 
         return rmse
 
@@ -1390,13 +1418,22 @@ class Scores:
 
     ### Probablistic scores
 
-    def calc_spread(self, p: xr.DataArray, **kwargs) -> xr.DataArray:
+    def calc_spread(
+        self,
+        p: xr.DataArray,
+        latitude_weights: xr.DataArray | None = None,
+        **kwargs,
+    ) -> xr.DataArray:
         """
         Calculate the spread of the forecast ensemble
+        
         Parameters
         ----------
         p: xr.DataArray
             Forecast data array with ensemble dimension
+        latitude_weights: xr.DataArray | None
+            Optional latitude weights for area-weighted averaging.
+            If provided, the spread will be weighted by these values.
 
         Returns
         -------
@@ -1405,9 +1442,26 @@ class Scores:
         """
         ens_std = p.std(dim=self._ens_dim)
 
-        return self._mean(np.sqrt(ens_std**2))
+        spread_squared = ens_std**2
 
-    def calc_spread_adj(self, p: xr.DataArray, **kwargs) -> xr.DataArray:
+        # Apply latitude weighting if provided
+        if latitude_weights is not None:
+            # Broadcast weights to match data dimensions
+            _, broadcasted_weights = xr.broadcast(spread_squared, latitude_weights)
+            # Weighted mean
+            spread_mean = (spread_squared * broadcasted_weights).mean(dim=self._agg_dims) / \
+                          broadcasted_weights.mean(dim=self._agg_dims)
+        else:
+            spread_mean = self._mean(spread_squared)
+
+        return np.sqrt(spread_mean)
+
+    def calc_spread_adj(
+        self,
+        p: xr.DataArray,
+        latitude_weights: xr.DataArray | None = None,
+        **kwargs,
+    ) -> xr.DataArray:
         """
         Calculate the (unbiased) ensemble spread following the GenCast convention.
 
@@ -1424,6 +1478,9 @@ class Scores:
         ----------
         p: xr.DataArray
             Forecast data array with ensemble dimension
+        latitude_weights: xr.DataArray | None
+            Optional latitude weights for area-weighted averaging.
+            If provided, the spread will be weighted by these values.
 
         Returns
         -------
@@ -1432,9 +1489,24 @@ class Scores:
         """
         ens_var = p.var(dim=self._ens_dim, ddof=1)
 
-        return np.sqrt(self._mean(ens_var))
+        # Apply latitude weighting if provided
+        if latitude_weights is not None:
+            # Broadcast weights to match data dimensions
+            _, broadcasted_weights = xr.broadcast(ens_var, latitude_weights)
+            # Weighted mean
+            var_mean = (ens_var * broadcasted_weights).mean(dim=self._agg_dims) / \
+                       broadcasted_weights.mean(dim=self._agg_dims)
+        else:
+            var_mean = self._mean(ens_var)
 
-    def calc_ssr(self, p: xr.DataArray, gt: xr.DataArray) -> xr.DataArray:
+        return np.sqrt(var_mean)
+
+    def calc_ssr(
+        self,
+        p: xr.DataArray,
+        gt: xr.DataArray,
+        latitude_weights: xr.DataArray | None = None,
+    ) -> xr.DataArray:
         """
         Calculate the Spread-Skill Ratio (SSR) of the forecast ensemble data w.r.t. reference data
 
@@ -1444,17 +1516,31 @@ class Scores:
             Forecast data array with ensemble dimension
         gt: xr.DataArray
             Ground truth data array
+        latitude_weights: xr.DataArray | None
+            Optional latitude weights for area-weighted averaging.
+            If provided, both spread and RMSE (skill) will be weighted independently by these values.
+            
         Returns
         -------
         xr.DataArray
             Spread-Skill Ratio (SSR)
         """
         ens_mean = p.mean(dim=self._ens_dim)
-        ssr = self.calc_spread(p) / self.calc_rmse(ens_mean, gt)
+        
+        # Calculate spread and skill independently with optional latitude weighting
+        spread = self.calc_spread(p, latitude_weights=latitude_weights)
+        rmse = self.calc_rmse(ens_mean, gt, latitude_weights=latitude_weights)
+        
+        ssr = spread / rmse
 
         return ssr
 
-    def calc_ssr_adj(self, p: xr.DataArray, gt: xr.DataArray) -> xr.DataArray:
+    def calc_ssr_adj(
+        self,
+        p: xr.DataArray,
+        gt: xr.DataArray,
+        latitude_weights: xr.DataArray | None = None,
+    ) -> xr.DataArray:
         """
         Calculate the ensemble-size-adjusted Spread-Skill Ratio (SSR) of the forecast ensemble
         data w.r.t. reference data.
@@ -1476,6 +1562,10 @@ class Scores:
             Forecast data array with ensemble dimension
         gt: xr.DataArray
             Ground truth data array
+        latitude_weights: xr.DataArray | None
+            Optional latitude weights for area-weighted averaging.
+            If provided, both spread and RMSE (skill) will be weighted independently by these values.
+            
         Returns
         -------
         xr.DataArray
@@ -1484,8 +1574,12 @@ class Scores:
         ens_size = p.sizes[self._ens_dim]
         correction = np.sqrt((ens_size + 1) / ens_size)
         ens_mean = p.mean(dim=self._ens_dim)
+        
+        # Calculate spread and skill independently with optional latitude weighting
+        spread = self.calc_spread_adj(p, latitude_weights=latitude_weights)
+        rmse = self.calc_rmse(ens_mean, gt, latitude_weights=latitude_weights)
 
-        return correction * self.calc_spread_adj(p) / self.calc_rmse(ens_mean, gt)
+        return correction * spread / rmse
 
     def calc_crps(
         self,
@@ -1738,6 +1832,62 @@ class Scores:
             raise ValueError(f"Second-order differentation is not implemenetd in {method} yet.")
 
         return var_diff_amplitude
+
+    def calc_latitude_weights(
+        data: xr.DataArray,
+        min_value: float = 1e-3,
+        max_value: float = 1.0,
+        lat_coord_name: str | None = None,
+    ) -> xr.DataArray:
+        """
+        Calculate latitude weights based on cosine of latitude.
+        
+        This function computes weights that account for the convergence of meridians
+        towards the poles, giving less weight to high-latitude grid points.
+        
+        Parameters
+        ----------
+        data : xr.DataArray
+            Data array with latitude coordinate
+        min_value : float
+            Minimum weight value (at poles). Default is 1e-3.
+        max_value : float
+            Maximum weight value (at equator). Default is 1.0.
+        lat_coord_name : str | None
+            Name of the latitude coordinate. If None, will search for standard
+            latitude coordinate names ('lat', 'latitude', 'rlat').
+            
+        Returns
+        -------
+        xr.DataArray
+            Latitude weights as an xarray DataArray with the same dimensions as
+            the latitude coordinate in the input data.
+            
+        Raises
+        ------
+        ValueError
+            If no latitude coordinate is found in the data.
+        """
+        # Try to find latitude coordinate if not specified
+        if lat_coord_name is None:
+            lat_names = ["lat", "latitude", "rlat"]
+            found_coords = [name for name in lat_names if name in data.coords]
+            if not found_coords:
+                raise ValueError(
+                    f"No latitude coordinate found. Please specify lat_coord_name. "
+                    f"Searched for: {lat_names}"
+                )
+            lat_coord_name = found_coords[0]
+        
+        # Extract latitude values in radians
+        lat_values = data.coords[lat_coord_name]
+        lat_radians = np.deg2rad(lat_values)
+        
+        # Calculate cosine weights
+        weights = (max_value - min_value) * np.cos(lat_radians) + min_value
+        
+        # Return as DataArray preserving coordinates
+        return xr.DataArray(weights, coords={lat_coord_name: lat_values}, dims=[lat_coord_name])
 
     def calc_quantiles(
         self,
