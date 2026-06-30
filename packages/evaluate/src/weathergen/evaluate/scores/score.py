@@ -1505,7 +1505,10 @@ class Scores:
         self,
         p: xr.DataArray,
         gt: xr.DataArray,
-        latitude_weights: xr.DataArray | None = None,
+        use_latitude_weights: bool = False,
+        lat_coord_name: str | None = None,
+        min_lat_weight: float = 1e-3,
+        max_lat_weight: float = 1.0,
     ) -> xr.DataArray:
         """
         Calculate the Spread-Skill Ratio (SSR) of the forecast ensemble data w.r.t. reference data
@@ -1516,9 +1519,16 @@ class Scores:
             Forecast data array with ensemble dimension
         gt: xr.DataArray
             Ground truth data array
-        latitude_weights: xr.DataArray | None
-            Optional latitude weights for area-weighted averaging.
-            If provided, both spread and RMSE (skill) will be weighted independently by these values.
+        use_latitude_weights: bool
+            If True, automatically calculate and apply latitude weights to both spread and RMSE
+            (skill) components independently. Default is False.
+        lat_coord_name: str | None
+            Name of the latitude coordinate. If None and use_latitude_weights is True, will search
+            for standard latitude coordinate names ('lat', 'latitude', 'rlat').
+        min_lat_weight: float
+            Minimum latitude weight value (at poles). Default is 1e-3.
+        max_lat_weight: float
+            Maximum latitude weight value (at equator). Default is 1.0.
             
         Returns
         -------
@@ -1526,6 +1536,13 @@ class Scores:
             Spread-Skill Ratio (SSR)
         """
         ens_mean = p.mean(dim=self._ens_dim)
+        
+        # Calculate latitude weights if requested
+        latitude_weights = None
+        if use_latitude_weights:
+            latitude_weights = self.calc_latitude_weights(
+                p, min_value=min_lat_weight, max_value=max_lat_weight, lat_coord_name=lat_coord_name
+            )
         
         # Calculate spread and skill independently with optional latitude weighting
         spread = self.calc_spread(p, latitude_weights=latitude_weights)
@@ -1539,7 +1556,10 @@ class Scores:
         self,
         p: xr.DataArray,
         gt: xr.DataArray,
-        latitude_weights: xr.DataArray | None = None,
+        use_latitude_weights: bool = False,
+        lat_coord_name: str | None = None,
+        min_lat_weight: float = 1e-3,
+        max_lat_weight: float = 1.0,
     ) -> xr.DataArray:
         """
         Calculate the ensemble-size-adjusted Spread-Skill Ratio (SSR) of the forecast ensemble
@@ -1562,9 +1582,16 @@ class Scores:
             Forecast data array with ensemble dimension
         gt: xr.DataArray
             Ground truth data array
-        latitude_weights: xr.DataArray | None
-            Optional latitude weights for area-weighted averaging.
-            If provided, both spread and RMSE (skill) will be weighted independently by these values.
+        use_latitude_weights: bool
+            If True, automatically calculate and apply latitude weights to both spread and RMSE
+            (skill) components independently. Default is False.
+        lat_coord_name: str | None
+            Name of the latitude coordinate. If None and use_latitude_weights is True, will search
+            for standard latitude coordinate names ('lat', 'latitude', 'rlat').
+        min_lat_weight: float
+            Minimum latitude weight value (at poles). Default is 1e-3.
+        max_lat_weight: float
+            Maximum latitude weight value (at equator). Default is 1.0.
             
         Returns
         -------
@@ -1574,6 +1601,13 @@ class Scores:
         ens_size = p.sizes[self._ens_dim]
         correction = np.sqrt((ens_size + 1) / ens_size)
         ens_mean = p.mean(dim=self._ens_dim)
+        
+        # Calculate latitude weights if requested
+        latitude_weights = None
+        if use_latitude_weights:
+            latitude_weights = self.calc_latitude_weights(
+                p, min_value=min_lat_weight, max_value=max_lat_weight, lat_coord_name=lat_coord_name
+            )
         
         # Calculate spread and skill independently with optional latitude weighting
         spread = self.calc_spread_adj(p, latitude_weights=latitude_weights)
