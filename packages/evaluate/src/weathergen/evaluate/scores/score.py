@@ -1540,8 +1540,11 @@ class Scores:
         # Calculate latitude weights if requested
         latitude_weights = None
         if use_latitude_weights:
-            latitude_weights = self.calc_latitude_weights(
-                p, min_value=min_lat_weight, max_value=max_lat_weight, lat_coord_name=lat_coord_name
+            latitude_weights = Scores.calc_latitude_weights(
+                data=p, 
+                min_value=min_lat_weight, 
+                max_value=max_lat_weight, 
+                lat_coord_name=lat_coord_name
             )
         
         # Calculate spread and skill independently with optional latitude weighting
@@ -1605,8 +1608,11 @@ class Scores:
         # Calculate latitude weights if requested
         latitude_weights = None
         if use_latitude_weights:
-            latitude_weights = self.calc_latitude_weights(
-                p, min_value=min_lat_weight, max_value=max_lat_weight, lat_coord_name=lat_coord_name
+            latitude_weights = Scores.calc_latitude_weights(
+                data=p, 
+                min_value=min_lat_weight, 
+                max_value=max_lat_weight, 
+                lat_coord_name=lat_coord_name
             )
         
         # Calculate spread and skill independently with optional latitude weighting
@@ -1867,6 +1873,7 @@ class Scores:
 
         return var_diff_amplitude
 
+    @staticmethod
     def calc_latitude_weights(
         data: xr.DataArray,
         min_value: float = 1e-3,
@@ -1920,8 +1927,10 @@ class Scores:
         # Calculate cosine weights
         weights = (max_value - min_value) * np.cos(lat_radians) + min_value
         
-        # Return as DataArray preserving coordinates
-        return xr.DataArray(weights, coords={lat_coord_name: lat_values}, dims=[lat_coord_name])
+        # Return as DataArray preserving the coordinate and its dimension
+        # The dimension should match the coordinate's dimension (e.g., 'ipoint' not 'lat')
+        lat_dim = lat_values.dims[0] if len(lat_values.dims) > 0 else lat_coord_name
+        return xr.DataArray(weights, coords={lat_coord_name: lat_values}, dims=[lat_dim])
 
     def calc_quantiles(
         self,
