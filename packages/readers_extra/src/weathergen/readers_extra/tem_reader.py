@@ -88,7 +88,8 @@ class DataReaderTEM(DataReaderTimestep):
         self.period = period
 
         # ---- Channel names (from coordinate) ---------------------------------
-        self.available_vars: list[str] = list(ds.coords["channels"].values)
+        # Cast to plain str: zarr coordinate returns np.str_ which OmegaConf rejects
+        self.available_vars: list[str] = [str(v) for v in ds.coords["channels"].values]
 
         # ---- Spatial grid (unstructured O96) ---------------------------------
         self.latitudes = np.clip(ds.coords["latitude"].values.astype(np.float32), -90.0, 90.0)
