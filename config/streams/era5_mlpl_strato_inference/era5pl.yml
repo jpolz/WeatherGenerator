@@ -1,0 +1,119 @@
+# (C) Copyright 2025 WeatherGenerator contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation
+# nor does it submit to any jurisdiction.
+
+# Diagnostic pressure-level stream from the ERA5 v8 dataset.
+# Standard pressure levels: 50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000 hPa.
+# Variables: u, v, t, q, z (surface fields from this dataset are excluded to avoid duplication
+# with the ERA5ml stream).
+# location_weight is intentionally omitted to disable latitude weighting.
+
+ERA5pl :
+  type : anemoi
+  filenames : ['aifs-ea-an-oper-0001-mars-o96-1979-2023-6h-v8.zarr']
+  stream_id : 1
+  source : []
+  target : ['u_850', 'v_850', 'q_850', 't_850', 'z_850', 
+            'u_500', 'v_500', 'q_500', 't_500', 'z_500', 
+            'u_50', 'v_50', 'q_50', 't_50', 'z_50']
+  geoinfo_channels : ['lsm', 'slor', 'sdor', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
+  loss_weight : 1.
+  # location_weight is intentionally omitted to disable latitude weighting
+  masking_rate : 0.6
+  masking_rate_none : 0.05
+  token_size : 8
+  tokenize_spacetime : True
+  frequency : 6h
+  max_num_targets: -1
+  embed :
+    net : transformer
+    num_tokens : 1
+    num_heads : 8
+    dim_embed : 256
+    num_blocks : 2
+  embed_target_coords :
+    net : linear
+    dim_embed : 256
+  target_readout :
+    num_layers : 2
+    num_heads : 4
+  pred_head :
+    ens_size : 1
+    num_layers : 1
+  # All channel_weights set to 1.0. Adjust per level to experiment with loss weighting.
+  channel_weights :
+    # u
+    u_50  : 1.0
+    u_100 : 1.0
+    u_150 : 1.0
+    u_200 : 1.0
+    u_250 : 1.0
+    u_300 : 1.0
+    u_400 : 1.0
+    u_500 : 1.0
+    u_600 : 1.0
+    u_700 : 1.0
+    u_850 : 1.0
+    u_925 : 1.0
+    u_1000: 1.0
+    # v
+    v_50  : 1.0
+    v_100 : 1.0
+    v_150 : 1.0
+    v_200 : 1.0
+    v_250 : 1.0
+    v_300 : 1.0
+    v_400 : 1.0
+    v_500 : 1.0
+    v_600 : 1.0
+    v_700 : 1.0
+    v_850 : 1.0
+    v_925 : 1.0
+    v_1000: 1.0
+    # t
+    t_50  : 1.0
+    t_100 : 1.0
+    t_150 : 1.0
+    t_200 : 1.0
+    t_250 : 1.0
+    t_300 : 1.0
+    t_400 : 1.0
+    t_500 : 1.0
+    t_600 : 1.0
+    t_700 : 1.0
+    t_850 : 1.0
+    t_925 : 1.0
+    t_1000: 1.0
+    # q
+    q_50  : 1.0
+    q_100 : 1.0
+    q_150 : 1.0
+    q_200 : 1.0
+    q_250 : 1.0
+    q_300 : 1.0
+    q_400 : 1.0
+    q_500 : 1.0
+    q_600 : 1.0
+    q_700 : 1.0
+    q_850 : 1.0
+    q_925 : 1.0
+    q_1000: 1.0
+    # z (geopotential)
+    z_50  : 1.0
+    z_100 : 1.0
+    z_150 : 1.0
+    z_200 : 1.0
+    z_250 : 1.0
+    z_300 : 1.0
+    z_400 : 1.0
+    z_500 : 1.0
+    z_600 : 1.0
+    z_700 : 1.0
+    z_850 : 1.0
+    z_925 : 1.0
+    z_1000: 1.0

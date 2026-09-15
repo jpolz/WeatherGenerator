@@ -6,7 +6,22 @@
 # In applying this licence, ECMWF does not waive the privileges and immunities
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
+#
+# Stratospheric forecasting config — ERA5 model-level stream + diagnostic pressure-level stream.
+# Streams:
+#   ERA5ml  (stream_id=0): aifs-ea-an-oper-0001-mars-o96-1979-2022-6h-v7-ml137.zarr
+#             model levels 29–54 (strato) + sparse 55–137 (tropo) + surface
+#   ERA5pl  (stream_id=1): aifs-ea-an-oper-0001-mars-o96-1979-2023-6h-v8.zarr
+#             standard pressure levels (50–1000 hPa), surface fields excluded to avoid
+#             duplication with ERA5ml
+# Key differences vs. config_forecasting.yml:
+#   - two-stream setup: ML model levels + diagnostic pressure levels
+#   - latitude weighting disabled in both stream configs
+#   - per-level channel_weights (see individual stream ymls)
+#   - training dates limited by ML137 dataset (ends 2022-12-31)
+#   - validation period 2021–2022
 
+embed_orientation: "channels"
 embed_unembed_mode: "block"
 embed_dropout_rate: 0.1
 
@@ -78,9 +93,9 @@ norm_eps: 1e-4
 
 latent_noise_kl_weight: 0.0 # 1e-5
 latent_noise_gamma: 2.0
-latent_noise_saturate_encodings: 5 
+latent_noise_saturate_encodings: 5
 latent_noise_use_additive_noise: False
-latent_noise_deterministic_latents: True 
+latent_noise_deterministic_latents: True
 
 freeze_modules: ""
 load_chkpt: {}
@@ -89,7 +104,7 @@ norm_type: "LayerNorm"
 
 #####################################
 
-streams_directory: "./config/streams/era5_1deg_forecasting/"
+streams_directory: "./config/streams/era5_mlpl_strato_ens/"
 streams: ???
 
 # type of zarr_store
@@ -102,13 +117,6 @@ general:
   rank: ???
   world_size: ???
 
-  # local_rank, 
-  # with_ddp,
-  # data_path_*, 
-  # model_path, 
-  # run_path, 
-  # path_shared_
-  
   multiprocessing_method: "fork"
 
   desc: ""
@@ -131,7 +139,7 @@ data_loading :
 
 # config for training
 training_config:
-  
+
   # training_mode: "masking", "student_teacher", "latent_loss"
   training_mode: ["masking"]
 
@@ -139,12 +147,14 @@ training_config:
   samples_per_mini_epoch: 4096
   shuffle: True
 
+  # ML137 dataset covers 1979–2022; v8 PL dataset covers 1979–2023.
+  # Training limited to overlap + reserve 2021–2022 for validation.
   start_date: 1979-01-01T00:00
-  end_date: 2022-12-31T00:00
+  end_date: 2012-12-31T00:00
 
   time_window_step: 06:00:00
   time_window_len: 06:00:00
-  
+
   learning_rate_scheduling :
     lr_start: 1e-6
     lr_max: 5e-5
@@ -158,10 +168,6 @@ training_config:
     parallel_scaling_policy: "sqrt"
 
   optimizer:
-    # which optimizer to use: "adamw" or "muon"
-    # muon only optimizes 2D weight matrices of hidden layers; all other
-    # parameters (biases, norms, ...) are still optimized with adamw
-    name: adamw
     grad_clip: 1.0
     weight_decay: 0.1
     log_grad_norms: False
@@ -170,15 +176,6 @@ training_config:
       beta1 : 0.98125 # == 0.85 on 2 nodes x 4 gpus
       beta2 : 0.9875  # == 0.90 on 2 nodes x 4 gpus
       eps : 2e-08
-    muon:
-      # muon shares adamw's lr schedule: adjust_lr_fn=match_rms_adamw rescales the lr per
-      # matrix so that the RMS of muon's update matches adamw's at the same nominal lr
-      momentum: 0.95
-      nesterov: True
-      ns_steps: 5
-      eps: 1e-7
-      # "original" | "match_rms_adamw"
-      adjust_lr_fn: match_rms_adamw
 
   losses : {
     "physical": {
@@ -186,7 +183,7 @@ training_config:
         loss_fcts: { "mse": { }, },
         },
     }
-  
+
   model_input: {
     "forecasting" : {
       # masking strategy: "random", "healpix", "forecast"
@@ -202,19 +199,20 @@ training_config:
 
 
 # validation config; full validation config is merge of training and validation config
-validation_config: 
+validation_config:
 
-  samples_per_mini_epoch: 256
+  samples_per_mini_epoch: 512
   shuffle: False
 
-  start_date: 2023-10-01T00:00
-  end_date: 2023-12-31T00:00
-  
+  # ML137 dataset ends 2022-12-31
+  start_date: 2021-01-01T00:00
+  end_date: 2022-12-31T00:00
+
   # whether to track the exponential moving average of weights for validation
-  validate_with_ema: 
+  validate_with_ema:
     enabled : True
     ema_ramp_up_ratio: 0.09
-    ema_halflife_in_thousands: 600
+    ema_halflife_in_thousands: 1e-3
 
   # parameters for validation samples that are written to disk
   output : {
@@ -228,35 +226,3 @@ validation_config:
 
   # run validation before training starts (mainly for model development)
   validate_before_training: False
-
-
-# test config; full test config is merge of validation and test config
-# test config is used by default when running inference
-
-# Tags for experiment tracking
-# These tags will be logged in MLFlow along with completed runs for train, eval, val
-# The tags are free-form, with the following rules:
-# - tags should be primitive types (strings, numbers, booleans). NO lists or dictionaries
-# - tags should not duplicate existing config entries.
-# - try to reuse existing tags where possible. MLFlow does not like having too many unique tags
-# - do not use long strings in values (less than 20 characters is a good rule of thumb, we may enforce this in the future)
-wgtags:
-  # The name of the organization of the person running the experiment.
-  # This may be autofilled in the future. Expected values are lowercase strings 
-  # e.g. "ecmwf", "cmcc", "metnor", "jsc", "escience"
-  org: null
-  # The Github issue corresponding to this run (number such as 1234)
-  # Github issues are the central point when running experiment and contain 
-  # links to hedgedocs, code branches, pull requests etc.
-  # It is recommended to associate a run with a Github issue.
-  issue: null
-  # The name of the experiment. This is a distinctive codename for the experiment campaign being run.
-  # This is expected to be the primary tag for comparing experiments in MLFlow, along with the
-  # issue number.
-  # Expected values are lowercase strings with no spaces, just underscores:
-  # Examples: "rollout_ablation_grid"  
-  exp: null
-  # *** Experiment-specific tags ***
-  # All extra tags (including lists, dictionaries, etc.) are treated 
-  # as strings by mlflow, so treat all extra tags as simple string key: value pairs.
-  grid: null
