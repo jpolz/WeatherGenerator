@@ -125,7 +125,7 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
         self.step_timedelta = mode_cfg.time_window_step
 
         # date_ranges: non-contiguous training periods; indices that fall in gaps are excluded
-        raw_ranges = mode_cfg.get("date_ranges", None)
+        raw_ranges = mode_cfg.get("date_ranges")
         if raw_ranges is not None:
             self._valid_ranges: list[tuple] | None = [
                 (r.start_date, r.end_date) for r in raw_ranges
@@ -136,6 +136,9 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
             self._valid_ranges = None
             t_start = self.mode_cfg.start_date
             t_end = self.mode_cfg.end_date
+            assert t_start is not None and t_end is not None, (
+                "start_date and end_date must be set when date_ranges is not specified"
+            )
 
         tw = TimeWindowHandler(
             t_start,
@@ -225,14 +228,17 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         if self._valid_ranges is None:
             return np.arange(self.max_input_steps, perms_len)
 
-        # include only indices whose mapped time falls within one of the valid periods
+        # include only indices whose full sample footprint (input steps through forecast
+        # target steps) falls within one of the valid periods
         all_indices = np.arange(self.max_input_steps, perms_len)
         t_start = self.time_window_handler.t_start
         step = self.time_window_handler.t_window_step
         times = t_start + all_indices * step
+        input_horizon = self.max_input_steps * step
+        forecast_horizon = (fsm + self.output_offset) * self.time_step
         mask = np.zeros(len(all_indices), dtype=bool)
         for p_start, p_end in self._valid_ranges:
-            mask |= (times >= p_start) & (times < p_end)
+            mask |= (times - input_horizon >= p_start) & (times + forecast_horizon < p_end)
         return all_indices[mask]
 
     def _init_stream_datasets(self, cf) -> dict[StreamName, _Stream]:

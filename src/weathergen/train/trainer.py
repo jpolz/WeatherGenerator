@@ -632,6 +632,7 @@ class Trainer(TrainerBase):
                             batch,
                             preds,
                             targets_and_auxs,
+                            self.dataset_val.time_window_handler,
                         )
 
                     pbar.update(batch_size)
