@@ -18,6 +18,7 @@ polar-maps               Polar stereographic animations and surface impact.
 vertical-structure       Height–time cross-sections of zonal wind and temperature.
 polar-cap-temperature    Area-weighted polar cap temperature by pressure level.
 qg-tem                   QG-TEM diagnostics: EP flux, divergence, residual circulation.
+precursors               SSW precursors: heat flux, wave amplitude, blocking index.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ def main(argv: list[str] | None = None) -> None:
             "vertical-structure",
             "polar-cap-temperature",
             "qg-tem",
+            "precursors",
         ],
         help="Analysis to run.",
     )
@@ -76,6 +78,10 @@ def main(argv: list[str] | None = None) -> None:
         _main(remaining)
     elif args.subcommand == "qg-tem":
         from weathergen.stratosphere.scripts.analyze_qg_tem import main as _main
+
+        _main(remaining)
+    elif args.subcommand == "precursors":
+        from weathergen.stratosphere.scripts.analyze_precursors import main as _main
 
         _main(remaining)
     else:

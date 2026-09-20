@@ -267,3 +267,187 @@ def nao_index(
 
     diff = az - ic
     return (diff - diff.mean()) / diff.std()
+
+
+# ---------------------------------------------------------------------------
+# SSW precursor diagnostics
+# ---------------------------------------------------------------------------
+
+
+def heat_flux_wave_activity(
+    v: NDArray[np.float32],
+    t: NDArray[np.float32],
+    coords: NDArray[np.float32],
+    lat_band: tuple[float, float] = (45.0, 75.0),
+    model_level: int | None = None,
+) -> NDArray[np.float64] | float:
+    """
+    Area-weighted eddy heat flux v'T' averaged over *lat_band*.
+
+    Poleward eddy heat flux is a standard proxy for upward-propagating wave
+    activity into the stratosphere and is a known SSW precursor (enhanced
+    heat flux ~1-2 weeks ahead of onset). Computed as the zonal-mean eddy
+    covariance of *v* and *t* on a single model level.
+
+    Args:
+        v, t:       Meridional wind (m/s) and temperature (K) on one model
+                    level. Shape ``(n_pts,)`` or ``(n_time, n_pts)``.
+        coords:     ``(n_pts, 2)`` [lat, lon] array.
+        lat_band:   Latitude band to average over (degrees N).
+        model_level: Model-level index of *v*/*t*, kept only for labeling —
+                    not used to select data (caller must pass the correct
+                    channel slice). The channel nearest 100 hPa in the
+                    ``era5_strato_final`` ERA5ml stream is level 61
+                    (pf≈103.7 hPa); see stratosphere_stream_channels notes.
+
+    Returns:
+        Scalar or ``(n_time,)`` array of eddy heat flux (K m/s).
+    """
+    from weathergen.stratosphere.io import find_latitude_band_indices, get_area_weights
+
+    indices = find_latitude_band_indices(coords, lat_band[0], lat_band[1])
+    weights = get_area_weights(coords, indices)
+
+    def _one(v_field: NDArray, t_field: NDArray) -> float:
+        v_sub = v_field[indices]
+        t_sub = t_field[indices]
+        v_bar = np.average(v_sub, weights=weights)
+        t_bar = np.average(t_sub, weights=weights)
+        return float(np.average((v_sub - v_bar) * (t_sub - t_bar), weights=weights))
+
+    if v.ndim == 1:
+        return _one(v, t)
+    return np.array([_one(v[i], t[i]) for i in range(v.shape[0])])
+
+
+def wave_amplitude(
+    z: NDArray[np.float32],
+    coords: NDArray[np.float32],
+    wavenumber: int = 1,
+    lat: float = 60.0,
+    tolerance: float = 2.5,
+) -> NDArray[np.float64] | float:
+    """
+    Zonal wavenumber amplitude of *z* at *lat*, via harmonic least-squares fit.
+
+    Fits ``z(lon) = a0 + a*cos(k*lon) + b*sin(k*lon)`` at the grid points
+    within *tolerance* of *lat* (works on the unstructured/irregular-longitude
+    WeatherGenerator grid, unlike a plain FFT). Wave-1/wave-2 amplitude at
+    60°N is a standard planetary-wave precursor for SSW events.
+
+    Args:
+        z:          Geopotential (height) field, e.g. ``z_500``. Shape
+                    ``(n_pts,)`` or ``(n_time, n_pts)``.
+        coords:     ``(n_pts, 2)`` [lat, lon] array.
+        wavenumber: Zonal wavenumber ``k`` (1 or 2 for planetary waves).
+        lat:        Target latitude (degrees N).
+        tolerance:  Latitude tolerance (degrees).
+
+    Returns:
+        Scalar or ``(n_time,)`` array of wave amplitude (same units as *z*).
+    """
+    from weathergen.stratosphere.io import find_latitude_indices
+
+    indices = find_latitude_indices(coords, lat, tolerance)
+    lons = np.deg2rad(coords[indices, 1].astype(np.float64))
+    design = np.column_stack(
+        [np.ones_like(lons), np.cos(wavenumber * lons), np.sin(wavenumber * lons)]
+    )
+
+    def _one(z_field: NDArray) -> float:
+        z_sub = z_field[indices].astype(np.float64)
+        coeffs, *_ = np.linalg.lstsq(design, z_sub, rcond=None)
+        _, a, b = coeffs
+        return float(np.hypot(a, b))
+
+    if z.ndim == 1:
+        return _one(z)
+    return np.array([_one(z[i]) for i in range(z.shape[0])])
+
+
+def blocking_index(
+    z: NDArray[np.float32],
+    coords: NDArray[np.float32],
+    lat_south: float = 40.0,
+    lat_central: float = 60.0,
+    lat_north: float = 80.0,
+    lon_width: float = 5.0,
+    tolerance: float = 2.5,
+    ghgs_threshold: float = 0.0,
+    ghgn_threshold: float = -10.0,
+) -> dict[str, NDArray]:
+    """
+    Tibaldi-Molteni-style meridional gradient reversal blocking index.
+
+    For longitude sectors of width *lon_width*, computes the southern
+    (GHGS) and northern (GHGN) 500 hPa geopotential gradients between
+    *lat_south*/*lat_central*/*lat_north*, and flags a sector as blocked
+    when ``GHGS > ghgs_threshold`` (reversed/weak subtropical gradient) and
+    ``GHGN < ghgn_threshold`` (strong poleward gradient reversal). This is a
+    tropospheric blocking precursor associated with subsequent stratospheric
+    wave-driven warming.
+
+    Args:
+        z:          Geopotential (height) field, e.g. ``z_500``. Shape
+                    ``(n_pts,)`` or ``(n_time, n_pts)``.
+        coords:     ``(n_pts, 2)`` [lat, lon] array.
+        lat_south, lat_central, lat_north: The three reference latitudes.
+        lon_width:  Longitude sector width (degrees).
+        tolerance:  Latitude tolerance for the sample nearest each reference
+                    latitude in a sector (degrees).
+        ghgs_threshold, ghgn_threshold: Gradient thresholds (m per degree
+            latitude) for the classic TM-index blocking criterion.
+
+    Returns:
+        Dict with ``lon_centers`` ``(n_lon,)`` and, per time step:
+        ``blocked`` boolean array (``(n_lon,)`` or ``(n_time, n_lon)``) and
+        ``index`` — the fraction of blocked longitudes (scalar or
+        ``(n_time,)``).
+    """
+    lats = coords[:, 0]
+    lons = coords[:, 1] % 360.0
+    lon_edges = np.arange(0.0, 360.0 + lon_width, lon_width)
+    lon_centers = (lon_edges[:-1] + lon_edges[1:]) / 2.0
+
+    def _sector_indices(lat_target: float) -> list[NDArray[np.intp]]:
+        lat_mask = np.abs(lats - lat_target) <= tolerance
+        return [
+            np.where(lat_mask & (lons >= lo) & (lons < hi))[0]
+            for lo, hi in zip(lon_edges[:-1], lon_edges[1:])
+        ]
+
+    idx_s = _sector_indices(lat_south)
+    idx_c = _sector_indices(lat_central)
+    idx_n = _sector_indices(lat_north)
+
+    def _one(z_field: NDArray) -> NDArray[np.bool_]:
+        n = len(lon_centers)
+        blocked = np.zeros(n, dtype=bool)
+        for i in range(n):
+            if len(idx_s[i]) == 0 or len(idx_c[i]) == 0 or len(idx_n[i]) == 0:
+                continue
+            z_s = float(np.mean(z_field[idx_s[i]]))
+            z_c = float(np.mean(z_field[idx_c[i]]))
+            z_n = float(np.mean(z_field[idx_n[i]]))
+            ghgs = (z_c - z_s) / (lat_central - lat_south)
+            ghgn = (z_n - z_c) / (lat_north - lat_central)
+            blocked[i] = ghgs > ghgs_threshold and ghgn < ghgn_threshold
+        return blocked
+
+    if z.ndim == 1:
+        blocked = _one(z)
+        return {
+            "lon_centers": lon_centers,
+            "blocked": blocked,
+            "index": float(np.mean(blocked)),
+        }
+
+    n_t = z.shape[0]
+    blocked_all = np.zeros((n_t, len(lon_centers)), dtype=bool)
+    for i in range(n_t):
+        blocked_all[i] = _one(z[i])
+    return {
+        "lon_centers": lon_centers,
+        "blocked": blocked_all,
+        "index": blocked_all.mean(axis=1),
+    }
