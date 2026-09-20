@@ -16,7 +16,7 @@ Usage::
         --validations-config eval_config/validations.yml \\
         --data-dir /path/to/validation/data \\
         --output-dir plots/polar_vortex \\
-        --channels u_29 u_30
+        --channels u_29 u_55
 
 Or as a module::
 
@@ -55,8 +55,8 @@ _logger = logging.getLogger(__name__)
 _ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Default channels to extract (priority order; first match per variable is used)
-_DEFAULT_U_CHANNELS = ["u_29", "u_30", "u_55"]  # ERA5ml
-_DEFAULT_U_CHANNELS_PL = ["u_10", "u_50"]  # ERA5pl
+_DEFAULT_U_CHANNELS = ["u_29", "u_55"]  # ERA5ml (model-level indices; u_29 ~ 10hPa)
+_DEFAULT_U_CHANNELS_PL = ["u_50", "u_500"]  # ERA5pl (only 50/500/850hPa exist)
 
 # Known SSW event date for reference lines
 SSW_DATE = datetime(2018, 2, 12)

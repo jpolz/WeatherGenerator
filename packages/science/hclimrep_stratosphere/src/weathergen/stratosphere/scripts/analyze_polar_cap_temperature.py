@@ -59,8 +59,8 @@ _ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 # Override with --t-channels to use a different set.
 _DEFAULT_T_LEVELS = [19, 29, 40, 48]
 
-# Fallback for ERA5pl streams
-_T_CHANNELS_PL = ["t_10", "t_50"]
+# Fallback for ERA5pl streams (only 50/500/850hPa exist)
+_T_CHANNELS_PL = ["t_50", "t_500"]
 
 # Default SSW reference date
 SSW_DATE = datetime(2018, 2, 12)

@@ -24,7 +24,7 @@
 #   --output-dir DIR     Plot output directory    [default: plots/ssw_analyze]
 #   --climatology PATH   Climatology zarr for anomaly computation (optional)
 #   --run SUBCMD...      Subcommands to run       [default: all four]
-#   --polar-vortex-extra Extra args for polar-vortex (e.g. '--channels u_29 u_30')
+#   --polar-vortex-extra Extra args for polar-vortex (e.g. '--channels u_29 u_55')
 #   --dry-run            Print commands, do not execute
 #   --devel              Use develbooster partition (short jobs)
 #   --help               Show this help
