@@ -20,6 +20,7 @@ polar-cap-temperature    Area-weighted polar cap temperature by pressure level.
 qg-tem                   QG-TEM diagnostics: EP flux, divergence, residual circulation.
 precursors               SSW precursors: heat flux, wave amplitude, blocking index.
 nam                      Coarse 3-level (50/500/850 hPa) NAM index.
+ifs-comparison           IFS S2S ensemble onset-timing baseline (u10/t10).
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> None:
             "qg-tem",
             "precursors",
             "nam",
+            "ifs-comparison",
         ],
         help="Analysis to run.",
     )
@@ -88,6 +90,10 @@ def main(argv: list[str] | None = None) -> None:
         _main(remaining)
     elif args.subcommand == "nam":
         from weathergen.stratosphere.scripts.analyze_nam import main as _main
+
+        _main(remaining)
+    elif args.subcommand == "ifs-comparison":
+        from weathergen.stratosphere.scripts.analyze_ifs_comparison import main as _main
 
         _main(remaining)
     else:
