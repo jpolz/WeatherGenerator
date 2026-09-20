@@ -451,3 +451,55 @@ def blocking_index(
         "blocked": blocked_all,
         "index": blocked_all.mean(axis=1),
     }
+
+
+# ---------------------------------------------------------------------------
+# NAM / Northern Annular Mode index
+# ---------------------------------------------------------------------------
+
+
+def nam_index_eof(
+    z_anom: NDArray[np.float32],
+    domain_coords: NDArray[np.float32],
+    high_lat_threshold: float = 70.0,
+) -> NDArray[np.float64]:
+    """
+    NAM/AO index: leading EOF (PC1) of area-weighted geopotential anomalies.
+
+    Standard approach: EOF1 of geopotential-height anomalies poleward of
+    ~20°N, PC1 normalized to unit std, sign fixed so that positive values
+    correspond to anomalously LOW geopotential height at high latitudes
+    (i.e. a stronger polar vortex / positive AO-like phase).
+
+    Args:
+        z_anom:        Geopotential (height) anomalies (climatology or
+                       time-mean already removed by the caller), already
+                       restricted to the EOF domain (e.g. poleward of 20°N).
+                       Shape ``(n_time, n_domain_pts)``.
+        domain_coords: ``(n_domain_pts, 2)`` [lat, lon] for the same points.
+        high_lat_threshold: Latitude used to determine the sign convention
+                       (mean anomaly poleward of this latitude).
+
+    Returns:
+        ``(n_time,)`` NAM index, unit-std normalized with sign fixed.
+    """
+    lat = domain_coords[:, 0]
+    # sqrt(cos(lat)) weighting on anomalies approximates area weighting in SVD
+    w = np.sqrt(np.cos(np.deg2rad(lat)))
+    weighted = z_anom * w[None, :]
+    weighted = weighted - weighted.mean(axis=0, keepdims=True)
+
+    u, s, _vt = np.linalg.svd(weighted, full_matrices=False)
+    pc1 = u[:, 0] * s[0]
+    pc1 = (pc1 - pc1.mean()) / pc1.std()
+
+    high_idx = np.where(lat >= high_lat_threshold)[0]
+    if len(high_idx) == 0:
+        # fallback: use the highest-latitude decile if none reach the threshold
+        high_idx = np.argsort(lat)[-max(1, len(lat) // 10) :]
+    high_lat_mean = z_anom[:, high_idx].mean(axis=1)
+    corr = np.corrcoef(pc1, high_lat_mean)[0, 1]
+    if corr > 0:
+        pc1 = -pc1
+
+    return pc1

@@ -19,6 +19,7 @@ vertical-structure       Height–time cross-sections of zonal wind and temperat
 polar-cap-temperature    Area-weighted polar cap temperature by pressure level.
 qg-tem                   QG-TEM diagnostics: EP flux, divergence, residual circulation.
 precursors               SSW precursors: heat flux, wave amplitude, blocking index.
+nam                      Coarse 3-level (50/500/850 hPa) NAM index.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ def main(argv: list[str] | None = None) -> None:
             "polar-cap-temperature",
             "qg-tem",
             "precursors",
+            "nam",
         ],
         help="Analysis to run.",
     )
@@ -82,6 +84,10 @@ def main(argv: list[str] | None = None) -> None:
         _main(remaining)
     elif args.subcommand == "precursors":
         from weathergen.stratosphere.scripts.analyze_precursors import main as _main
+
+        _main(remaining)
+    elif args.subcommand == "nam":
+        from weathergen.stratosphere.scripts.analyze_nam import main as _main
 
         _main(remaining)
     else:
