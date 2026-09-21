@@ -16,6 +16,8 @@
 #   --lead LEAD           Submit only for a specific lead (t15d, t10d, t5d, t0d)
 #   --event EVENT         Submit for a specific event (feb2018, jan2013, jan2019, jan2021)
 #   --stream-dir DIR      Override streams_directory passed to inference (whole dir, all streams)
+#   --force                Re-submit even if the run-ID manifest already has an entry for
+#                          this (event, model, lead)
 #   --help                Show this help message
 #
 # NOTE: weathergen_validate_jwb_batch.sh must use the current inference CLI:
@@ -32,8 +34,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WG_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 mkdir -p "${SCRIPT_DIR}/logs"
 
+MANAGE_RUNS="${SCRIPT_DIR}/manage_runs.py"
+VENV_PY="${WG_ROOT}/.venv/bin/python3"
+[[ -x "${VENV_PY}" ]] || VENV_PY="python3"
+
 # Default settings
 DRY_RUN=false
+FORCE=false
 SPECIFIC_MODEL=""
 SPECIFIC_LEAD=""
 SPECIFIC_EVENT="feb2018"
@@ -52,6 +59,7 @@ NC='\033[0m'
 while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)    DRY_RUN=true;          shift ;;
+        --force)      FORCE=true;            shift ;;
         --model)      SPECIFIC_MODEL="$2";   shift 2 ;;
         --lead)       SPECIFIC_LEAD="$2";    shift 2 ;;
         --event)      SPECIFIC_EVENT="$2";   shift 2 ;;
@@ -155,6 +163,11 @@ submit_validation() {
         local gen_run_id
         gen_run_id=$(echo "${launch_out}" | grep -oP '(?<=Using generated run id: )\S+')
         echo "$(date '+%Y-%m-%d %H:%M:%S') | ${gen_run_id} | ${run_id} | ${model_name} | ${lead_key} | ${init_date} | ${fsteps}" >> "${SCRIPT_DIR}/validation_submissions.log"
+
+        "${VENV_PY}" "${MANAGE_RUNS}" upsert \
+            --event "${SPECIFIC_EVENT}" --model "${model_key}" --lead "${lead_key}" \
+            --run-id "${gen_run_id}" --model-id "${run_id}" --model-label "${model_name}" \
+            --init-date "${init_date}" --fsteps "${fsteps}"
     fi
 }
 
@@ -185,13 +198,15 @@ for model_key in "${!MODELS[@]}"; do
     read -r run_id model_name timestep <<< "${MODELS[$model_key]}"
     step_h=6; [[ "$timestep" == "24h" ]] && step_h=24
 
-    # Leads already submitted — skip to avoid duplicates (add keys to avoid re-submission)
-    declare -A SKIP_LEADS=()
-
     for offset in $(seq "$LEAD_MIN" "$LEAD_MAX"); do
         lead_key="t${offset}d"
         [[ -n "$SPECIFIC_LEAD" && "$lead_key" != "$SPECIFIC_LEAD" ]] && continue
-        [[ -n "${SKIP_LEADS[$lead_key]+x}" ]] && { echo "Skipping ${lead_key} (already submitted)"; continue; }
+
+        if [[ "$FORCE" != true ]] && "${VENV_PY}" "${MANAGE_RUNS}" exists \
+            --event "${SPECIFIC_EVENT}" --model "${model_key}" --lead "${lead_key}" 2>/dev/null; then
+            echo "Skipping ${lead_key} (already in manifest, use --force to re-submit)"
+            continue
+        fi
 
         init_date=$(date_offset "$ssw_date" "$offset")
         fsteps=$(( (offset + POST_SSW_DAYS) * 24 / step_h ))
