@@ -18,6 +18,8 @@
 #   --stream-dir DIR      Override streams_directory passed to inference (whole dir, all streams)
 #   --force                Re-submit even if the run-ID manifest already has an entry for
 #                          this (event, model, lead)
+#   --no-channel-filter    Write all target channels (default: trim to the SSW-relevant
+#                          write-list below, via test_config.output.channels.*)
 #   --help                Show this help message
 #
 # NOTE: weathergen_validate_jwb_batch.sh must use the current inference CLI:
@@ -41,6 +43,7 @@ VENV_PY="${WG_ROOT}/.venv/bin/python3"
 # Default settings
 DRY_RUN=false
 FORCE=false
+NO_CHANNEL_FILTER=false
 SPECIFIC_MODEL=""
 SPECIFIC_LEAD=""
 SPECIFIC_EVENT="feb2018"
@@ -60,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)    DRY_RUN=true;          shift ;;
         --force)      FORCE=true;            shift ;;
+        --no-channel-filter) NO_CHANNEL_FILTER=true; shift ;;
         --model)      SPECIFIC_MODEL="$2";   shift 2 ;;
         --lead)       SPECIFIC_LEAD="$2";    shift 2 ;;
         --event)      SPECIFIC_EVENT="$2";   shift 2 ;;
@@ -84,6 +88,7 @@ done
 declare -A MODELS=(
     ["x1menaw0"]="x1menaw0 strato 6h"
     ["kzt66ihm"]="kzt66ihm strato 6h latweight"
+    ["qz7qhgyq"]="qz7qhgyq strato 6h"
 )
 
 # SSW central warming dates (feb2016 is a no-SSW control, same calendar anchor as feb2018)
@@ -102,6 +107,20 @@ LEAD_MAX=20
 POST_SSW_DAYS=45
 
 SAMPLES=1
+
+# Output-channel write-lists (disk-space trimming, Phase E). Applied as a
+# per-run test_config.output.channels.* override (NOT written into
+# config_final.yml), so training/other configs are unaffected. Drops all
+# ERA5ml q_* channels and all ERA5pl v_*/q_* channels — unreferenced by any
+# current stratosphere analysis script.
+ERA5ML_WRITE_CHANNELS="2t,10u,10v,\
+u_5,u_12,u_19,u_25,u_29,u_32,u_36,u_40,u_44,u_48,u_51,u_54,\
+u_55,u_58,u_61,u_64,u_67,u_70,u_73,u_76,u_80,u_84,u_88,u_92,u_96,u_100,u_105,u_110,u_115,u_120,u_125,u_130,u_137,\
+v_5,v_12,v_19,v_25,v_29,v_32,v_36,v_40,v_44,v_48,v_51,v_54,\
+v_55,v_58,v_61,v_64,v_67,v_70,v_73,v_76,v_80,v_84,v_88,v_92,v_96,v_100,v_105,v_110,v_115,v_120,v_125,v_130,v_137,\
+t_5,t_12,t_19,t_25,t_29,t_32,t_36,t_40,t_44,t_48,t_51,t_54,\
+t_55,t_58,t_61,t_64,t_67,t_70,t_73,t_76,t_80,t_84,t_88,t_92,t_96,t_100,t_105,t_110,t_115,t_120,t_125,t_130,t_137"
+ERA5PL_WRITE_CHANNELS="z_50,z_500,z_850,u_50,u_500,u_850,t_50,t_500,t_850"
 
 # ============================================================================
 # HELPERS
@@ -152,6 +171,12 @@ submit_validation() {
             "test_config.forecast.num_steps=${fsteps}"
             "streams_directory=${streams_dir}"
     )
+    if [[ "$NO_CHANNEL_FILTER" != true ]]; then
+        launch_cmd+=(
+            "test_config.output.channels.ERA5ml=[${ERA5ML_WRITE_CHANNELS}]"
+            "test_config.output.channels.ERA5pl=[${ERA5PL_WRITE_CHANNELS}]"
+        )
+    fi
 
     if [[ "$DRY_RUN" == true ]]; then
         echo -e "${YELLOW}[DRY RUN] ${launch_cmd[*]}${NC}\n"
