@@ -151,24 +151,7 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
                 t_start = min(r[0] for r in self._valid_ranges)
                 t_end = max(r[1] for r in self._valid_ranges)
             else:
-                self._valid_init_dates = np.array(sorted(str_to_datetime64(r) for r in raw_ranges))
-                # init dates must sit on the sampling grid, or _calc_baseperms would silently
-                # drop them instead of matching an index
-                misaligned = (
-                    self._valid_init_dates - self._valid_init_dates.min()
-                ) % self.step_timedelta
-                assert np.all(misaligned == np.timedelta64(0)), (
-                    "All date_ranges init dates must be spaced by a multiple of "
-                    f"time_window_step ({self.step_timedelta})"
-                )
-                # widen the underlying time range so the first/last init dates still have
-                # room for their full input window and forecast rollout
-                input_horizon = self.max_input_steps * self.step_timedelta
-                forecast_horizon = (
-                    self.list_num_forecast_steps.max() + self.output_offset
-                ) * self.time_step
-                t_start = self._valid_init_dates.min() - input_horizon
-                t_end = self._valid_init_dates.max() + forecast_horizon + self.len_timedelta
+                self._valid_init_dates, t_start, t_end = self._resolve_init_dates(raw_ranges)
         else:
             t_start = self.mode_cfg.start_date
             t_end = self.mode_cfg.end_date
@@ -248,6 +231,38 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         if not self.repeat_data:
             assert n_duplicates <= 0
 
+    def _resolve_init_dates(
+        self, raw_ranges: Sequence
+    ) -> tuple[np.typing.NDArray, np.datetime64, np.datetime64]:
+        """
+        Parse a flat date_ranges list of single init dates (fixed forecast init dates mode,
+        e.g. inference initialized on the 1st of every month) into sorted timestamps, and
+        compute the widened [t_start, t_end) range needed so every init date still has room
+        for its full input window and forecast rollout.
+        """
+        valid_init_dates = np.array(sorted(str_to_datetime64(r) for r in raw_ranges))
+        # init dates must sit on the sampling grid, or _calc_baseperms would silently
+        # drop them instead of matching an index
+        misaligned = (valid_init_dates - valid_init_dates.min()) % self.step_timedelta
+        assert np.all(misaligned == np.timedelta64(0)), (
+            "All date_ranges init dates must be spaced by a multiple of "
+            f"time_window_step ({self.step_timedelta})"
+        )
+        input_horizon = self.max_input_steps * self.step_timedelta
+        forecast_horizon = (
+            self.list_num_forecast_steps.max() + self.output_offset
+        ) * self.time_step
+        t_start = valid_init_dates.min() - input_horizon
+        t_end = valid_init_dates.max() + forecast_horizon + self.len_timedelta
+        return valid_init_dates, t_start, t_end
+
+    def _mask_init_dates(
+        self, all_indices: np.typing.NDArray, times: np.typing.NDArray
+    ) -> np.typing.NDArray:
+        """Restrict indices to those whose init time exactly matches a requested init date."""
+        mask = np.isin(times, self._valid_init_dates.astype(times.dtype))
+        return all_indices[mask]
+
     def _calc_baseperms(self, fsm: int) -> np.typing.NDArray:
         """This calculates the base permutation array and
         depends on fsm so must be repeated for __init__ and reset"""
@@ -264,9 +279,7 @@ Set repeat_data_in_mini_epoch to True if this is undesired."
         times = t_start + all_indices * step
 
         if self._valid_init_dates is not None:
-            # only keep indices whose init time exactly matches one of the requested dates
-            mask = np.isin(times, self._valid_init_dates.astype(times.dtype))
-            return all_indices[mask]
+            return self._mask_init_dates(all_indices, times)
 
         # include only indices whose full sample footprint (input steps through forecast
         # target steps) falls within one of the valid periods
