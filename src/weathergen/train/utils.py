@@ -13,6 +13,7 @@ from typing import Literal
 
 import torch
 from omegaconf import OmegaConf
+
 from weathergen.common import config
 from weathergen.common.config import Config, merge_configs
 
