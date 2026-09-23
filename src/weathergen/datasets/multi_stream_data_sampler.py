@@ -15,9 +15,10 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-
 from weathergen.common.config import Config, str_to_datetime64
 from weathergen.common.io import IOReaderData
+from weathergen.readers_extra.registry import get_extra_reader
+
 from weathergen.datasets.batch import ModelBatch
 from weathergen.datasets.data_reader_anemoi import DataReaderAnemoi
 from weathergen.datasets.data_reader_base import (
@@ -32,7 +33,6 @@ from weathergen.datasets.tokenizer_masking import TokenizerMasking
 from weathergen.datasets.utils import (
     get_tokens_lens,
 )
-from weathergen.readers_extra.registry import get_extra_reader
 from weathergen.train.utils import Stage, get_batch_size_from_config
 from weathergen.utils.distributed import is_root
 
@@ -152,6 +152,13 @@ class MultiStreamDataSampler(torch.utils.data.IterableDataset):
                 t_end = max(r[1] for r in self._valid_ranges)
             else:
                 self._valid_init_dates, t_start, t_end = self._resolve_init_dates(raw_ranges)
+                # reset() pads/repeats perms with random fillers when repeat_data is enabled,
+                # which would silently duplicate some init dates and run them more than once
+                assert not self.repeat_data, (
+                    "repeat_data_in_mini_epoch must be False when date_ranges is a list of "
+                    "single init dates, otherwise some init dates would be sampled more than "
+                    "once to pad out samples_per_mini_epoch"
+                )
         else:
             t_start = self.mode_cfg.start_date
             t_end = self.mode_cfg.end_date
