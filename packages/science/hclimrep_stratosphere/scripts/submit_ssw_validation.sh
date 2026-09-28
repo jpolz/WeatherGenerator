@@ -20,6 +20,9 @@
 #                          this (event, model, lead)
 #   --no-channel-filter    Write all target channels (default: trim to the SSW-relevant
 #                          write-list below, via test_config.output.channels.*)
+#   --account ACCOUNT     Slurm account to submit under (default: weatherai). NOTE: if
+#                          the weatherai QOS is suspended (0-node allowance), pass an
+#                          active account, e.g. --account e-ext-2025e01-128
 #   --help                Show this help message
 #
 # NOTE: weathergen_validate_jwb_batch.sh must use the current inference CLI:
@@ -48,6 +51,7 @@ SPECIFIC_MODEL=""
 SPECIFIC_LEAD=""
 SPECIFIC_EVENT="feb2018"
 STREAM_DIR=""
+ACCOUNT="weatherai"
 
 LAUNCH_SCRIPT="${WG_ROOT}/../WeatherGenerator-private/hpc/launch-slurm.py"
 
@@ -68,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --lead)       SPECIFIC_LEAD="$2";    shift 2 ;;
         --event)      SPECIFIC_EVENT="$2";   shift 2 ;;
         --stream-dir) STREAM_DIR="$2";       shift 2 ;;
+        --account)    ACCOUNT="$2";          shift 2 ;;
         --help)
             grep "^#" "$0" | grep -v "^#!/" | sed 's/^# \?//'
             exit 0
@@ -159,7 +164,7 @@ submit_validation() {
         --stage inference
         --nodes=1
         -t 02:00:00
-        --account=weatherai
+        --account="${ACCOUNT}"
         --from-run-id "${run_id}"
         --no-register
         --link-venv
@@ -181,9 +186,13 @@ submit_validation() {
     if [[ "$DRY_RUN" == true ]]; then
         echo -e "${YELLOW}[DRY RUN] ${launch_cmd[*]}${NC}\n"
     else
-        local launch_out
-        launch_out=$("${launch_cmd[@]}" 2>&1)
+        local launch_out launch_rc=0
+        launch_out=$("${launch_cmd[@]}" 2>&1) || launch_rc=$?
         echo "${launch_out}"
+        if [[ ${launch_rc} -ne 0 ]]; then
+            echo -e "${RED}ERROR: launch-slurm.py failed (exit ${launch_rc}) for ${lead_key}/${SPECIFIC_EVENT}. Skipping manifest/log update.${NC}"
+            return 1
+        fi
         # Extract generated run_id from launcher output
         local gen_run_id
         gen_run_id=$(echo "${launch_out}" | grep -oP '(?<=Using generated run id: )\S+')
@@ -236,8 +245,11 @@ for model_key in "${!MODELS[@]}"; do
         init_date=$(date_offset "$ssw_date" "$offset")
         fsteps=$(( (offset + POST_SSW_DAYS) * 24 / step_h ))
 
-        submit_validation "$run_id" "$model_name" "$lead_key" "$init_date" "$fsteps" "$timestep"
-        TOTAL_SUBMITTED=$((TOTAL_SUBMITTED + 1))
+        if submit_validation "$run_id" "$model_name" "$lead_key" "$init_date" "$fsteps" "$timestep"; then
+            TOTAL_SUBMITTED=$((TOTAL_SUBMITTED + 1))
+        else
+            echo -e "${RED}Submission failed for ${model_key}/${lead_key}/${SPECIFIC_EVENT}, continuing with remaining jobs.${NC}"
+        fi
     done
 done
 

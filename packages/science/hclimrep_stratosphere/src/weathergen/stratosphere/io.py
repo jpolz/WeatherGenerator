@@ -179,13 +179,53 @@ def get_area_weights(
     indices: NDArray[np.intp],
 ) -> NDArray[np.float64]:
     """
-    Compute cosine-latitude area weights for a subset of grid points.
+    Compute area weights for a subset of grid points.
+    
+    For O<n> reduced Gaussian grids (e.g. O96), uses the correct formula accounting 
+    for varying point density per latitude band. For other grids, falls back to 
+    cosine-latitude weighting.
 
     Returns normalized weights summing to 1.
     """
-    lats = coords[indices, 0]
-    weights = np.cos(np.deg2rad(lats))
+    weights = get_o_grid_weights(coords, indices)
     return weights / weights.sum()
+
+
+def get_o_grid_weights(
+    coords: NDArray[np.float32],
+    indices: NDArray[np.intp] | None = None,
+) -> NDArray[np.float64]:
+    """
+    Compute (unnormalized) per-point area weights, accounting for the O<n>
+    reduced Gaussian grid's varying point density per latitude band if
+    *coords* matches a known O<n> grid size; otherwise falls back to plain
+    cosine-latitude weighting.
+
+    Args:
+        coords:  ``(n_pts, 2)`` [lat, lon] array for the *full* grid (used to
+                 detect the O<n> grid size).
+        indices: Optional subset of point indices to return weights for
+                 (default: all points).
+
+    Returns:
+        Unnormalized weights, same length as *indices* (or *coords* if
+        *indices* is None).
+    """
+    # Map total grid point count to n for O<n> reduced Gaussian grids (formula: 4*n*(n+9))
+    _O_GRID_N = {4 * n * (n + 9): n for n in [96, 160, 256, 320, 640, 1280]}
+
+    total_points = coords.shape[0]
+    sub_coords = coords if indices is None else coords[indices]
+    lats = sub_coords[:, 0]
+
+    if total_points in _O_GRID_N:
+        n = _O_GRID_N[total_points]
+        # O<n> reduced Gaussian: each latitude band has 20+4*(i-1) points
+        # i ranges from 1 (pole) to n (equator)
+        n_lat_max = 20 + 4 * (n - 1)
+        n_lat = n_lat_max - np.abs(lats) * (n_lat_max - 20) / 90.0
+        return np.cos(np.deg2rad(lats)) / n_lat
+    return np.cos(np.deg2rad(lats))
 
 
 def convert_times_to_datetime(times: NDArray) -> list:

@@ -458,10 +458,107 @@ def blocking_index(
 # ---------------------------------------------------------------------------
 
 
+def nam_index_eof_reference(
+    z_anom_ref: NDArray[np.float64],
+    domain_coords: NDArray[np.float32],
+    high_lat_threshold: float = 70.0,
+    full_coords: NDArray[np.float32] | None = None,
+    domain_indices: NDArray[np.intp] | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """
+    Compute a reference EOF pattern from ERA5 (or another reference dataset).
+
+    This is computed once and then reused to project all predictions and targets
+    onto the same spatial pattern, avoiding sign ambiguity from independent SVD
+    calls at each pressure level.
+
+    Args:
+        z_anom_ref:    Reference geopotential anomalies (e.g. ERA5 time-mean
+                       or climatology removed), shape ``(n_time, n_domain_pts)``.
+        domain_coords: ``(n_domain_pts, 2)`` [lat, lon] for the same points.
+        high_lat_threshold: Latitude for sign-fixing convention.
+        full_coords:   Optional ``(n_pts, 2)`` full-grid coords, needed to
+                       correctly detect an O<n> reduced Gaussian grid (the
+                       *domain_coords* subset alone can't be matched against
+                       the O<n> point-count formula). If omitted, falls back
+                       to plain cosine-latitude weighting.
+        domain_indices: Indices into *full_coords* selecting *domain_coords*
+                       (required together with *full_coords*).
+
+    Returns:
+        (eof1_pattern, singular_value): The leading EOF spatial pattern 
+        (length n_domain_pts, normalized) and its singular value.
+    """
+    lat = domain_coords[:, 0]
+    if full_coords is not None and domain_indices is not None:
+        from weathergen.stratosphere.io import get_o_grid_weights
+
+        w = np.sqrt(get_o_grid_weights(full_coords, domain_indices))
+    else:
+        w = np.sqrt(np.cos(np.deg2rad(lat)))
+
+    weighted = z_anom_ref * w[None, :]
+    weighted = weighted - weighted.mean(axis=0, keepdims=True)
+
+    u, s, _vt = np.linalg.svd(weighted.T, full_matrices=False)
+    eof1 = u[:, 0]  # (n_domain_pts,)
+    sv = s[0]
+
+    # Fix sign so positive index = low heights at high lats
+    high_idx = np.where(lat >= high_lat_threshold)[0]
+    if len(high_idx) == 0:
+        high_idx = np.argsort(lat)[-max(1, len(lat) // 10) :]
+    if np.dot(eof1[high_idx], z_anom_ref[:, high_idx].mean(axis=0)) > 0:
+        eof1 = -eof1
+
+    return eof1, sv
+
+
+def nam_index_eof_project(
+    z_anom: NDArray[np.float64],
+    eof1_pattern: NDArray[np.float64],
+    domain_coords: NDArray[np.float32],
+    full_coords: NDArray[np.float32] | None = None,
+    domain_indices: NDArray[np.intp] | None = None,
+) -> NDArray[np.float64]:
+    """
+    Project geopotential anomalies onto a pre-computed reference EOF pattern.
+
+    Args:
+        z_anom:        Geopotential anomalies to project, shape ``(n_time, n_domain_pts)``.
+        eof1_pattern:  Reference EOF spatial pattern from ``nam_index_eof_reference``.
+        domain_coords: ``(n_domain_pts, 2)`` [lat, lon] for the same points.
+        full_coords:   Optional full-grid coords for O<n> grid detection (see
+                       ``nam_index_eof_reference``); must match what was used
+                       to build *eof1_pattern*.
+        domain_indices: Indices into *full_coords* selecting *domain_coords*.
+
+    Returns:
+        ``(n_time,)`` PC time series, unit-std normalized.
+    """
+    lat = domain_coords[:, 0]
+    if full_coords is not None and domain_indices is not None:
+        from weathergen.stratosphere.io import get_o_grid_weights
+
+        w = np.sqrt(get_o_grid_weights(full_coords, domain_indices))
+    else:
+        w = np.sqrt(np.cos(np.deg2rad(lat)))
+
+    weighted = z_anom * w[None, :]
+    weighted = weighted - weighted.mean(axis=0, keepdims=True)
+
+    # Project onto reference pattern: dot product with EOF1
+    pc1 = np.dot(weighted, eof1_pattern)
+    pc1 = (pc1 - pc1.mean()) / (pc1.std() + 1e-10)
+    return pc1
+
+
 def nam_index_eof(
     z_anom: NDArray[np.float32],
     domain_coords: NDArray[np.float32],
     high_lat_threshold: float = 70.0,
+    full_coords: NDArray[np.float32] | None = None,
+    domain_indices: NDArray[np.intp] | None = None,
 ) -> NDArray[np.float64]:
     """
     NAM/AO index: leading EOF (PC1) of area-weighted geopotential anomalies.
@@ -471,6 +568,14 @@ def nam_index_eof(
     correspond to anomalously LOW geopotential height at high latitudes
     (i.e. a stronger polar vortex / positive AO-like phase).
 
+    Uses O<n> reduced Gaussian grid weighting if *full_coords*/*domain_indices*
+    are given and match a known O<n> grid, otherwise falls back to
+    cosine-latitude weighting.
+
+    **Note:** For consistency across multiple datasets/pressure levels, prefer
+    using ``nam_index_eof_reference`` once on ERA5 and then 
+    ``nam_index_eof_project`` for all simulations.
+
     Args:
         z_anom:        Geopotential (height) anomalies (climatology or
                        time-mean already removed by the caller), already
@@ -479,13 +584,22 @@ def nam_index_eof(
         domain_coords: ``(n_domain_pts, 2)`` [lat, lon] for the same points.
         high_lat_threshold: Latitude used to determine the sign convention
                        (mean anomaly poleward of this latitude).
+        full_coords:   Optional full-grid coords for O<n> grid detection
+                       (the *domain_coords* subset alone can't be matched
+                       against the O<n> point-count formula).
+        domain_indices: Indices into *full_coords* selecting *domain_coords*.
 
     Returns:
         ``(n_time,)`` NAM index, unit-std normalized with sign fixed.
     """
     lat = domain_coords[:, 0]
-    # sqrt(cos(lat)) weighting on anomalies approximates area weighting in SVD
-    w = np.sqrt(np.cos(np.deg2rad(lat)))
+    if full_coords is not None and domain_indices is not None:
+        from weathergen.stratosphere.io import get_o_grid_weights
+
+        w = np.sqrt(get_o_grid_weights(full_coords, domain_indices))
+    else:
+        w = np.sqrt(np.cos(np.deg2rad(lat)))
+
     weighted = z_anom * w[None, :]
     weighted = weighted - weighted.mean(axis=0, keepdims=True)
 

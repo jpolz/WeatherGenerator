@@ -47,7 +47,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from weathergen.stratosphere.config import load_validations_config
-from weathergen.stratosphere.diagnostics import nam_index_eof
+from weathergen.stratosphere.diagnostics import (
+    nam_index_eof_reference,
+    nam_index_eof_project,
+)
 from weathergen.stratosphere.io import (
     convert_times_to_datetime,
     find_polar_cap_indices,
@@ -206,8 +209,27 @@ def extract_nam(
             pred_anom = pred_arr - pred_arr.mean(axis=0, keepdims=True)
             tgt_anom = tgt_arr - tgt_arr.mean(axis=0, keepdims=True)
 
-        pred_nam[lv] = nam_index_eof(pred_anom, domain_coords)
-        tgt_nam[lv] = nam_index_eof(tgt_anom, domain_coords)
+        # Compute reference EOF pattern from ERA5 (target), then project both
+        eof1_ref, _sv = nam_index_eof_reference(
+            tgt_anom.astype(np.float64),
+            domain_coords,
+            full_coords=coords,
+            domain_indices=domain_idx,
+        )
+        pred_nam[lv] = nam_index_eof_project(
+            pred_anom.astype(np.float64),
+            eof1_ref,
+            domain_coords,
+            full_coords=coords,
+            domain_indices=domain_idx,
+        )
+        tgt_nam[lv] = nam_index_eof_project(
+            tgt_anom.astype(np.float64),
+            eof1_ref,
+            domain_coords,
+            full_coords=coords,
+            domain_indices=domain_idx,
+        )
 
     days_rel = np.array(
         [(dt - ssw_date).total_seconds() / 86400.0 for dt in datetimes],

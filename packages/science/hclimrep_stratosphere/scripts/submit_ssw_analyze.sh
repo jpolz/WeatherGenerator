@@ -10,27 +10,31 @@
 #       [--config CONFIG] [--data-dir DIR] [--output-dir DIR] \
 #       [--run SUBCOMMAND [SUBCOMMAND...]] [--dry-run] [--devel]
 #
-# Subcommands (default: all):
+# Subcommands (default: all except ifs-comparison):
 #   polar-vortex             Zonal mean u-wind at 60°N, SSW detection
 #   ssw-lead-times           Prediction skill vs lead time
 #   polar-maps               Polar stereographic animations + surface impact
 #   vertical-structure       Height-time cross-sections
 #   polar-cap-temperature    Area-weighted polar cap temperature by level
 #   qg-tem                   QG-TEM diagnostics: EP flux, divergence, residual circulation
+#   precursors               SSW precursors: heat flux, wave amplitude, blocking index
+#   nam                      Coarse 3-level (50/500/850 hPa) NAM index
+#   ifs-comparison            IFS S2S ensemble onset-timing baseline (needs --ifs-file)
 #
 # Options:
 #   --config PATH        Validations config YAML  [default: config/evaluate/ssw_feb2018.yml]
 #   --data-dir DIR       Zarr results directory   [default: results]
 #   --output-dir DIR     Plot output directory    [default: plots/ssw_analyze]
 #   --climatology PATH   Climatology zarr for anomaly computation (optional)
-#   --run SUBCMD...      Subcommands to run       [default: all four]
+#   --ifs-file PATH      IFS S2S hindcast NetCDF, required for ifs-comparison
+#   --run SUBCMD...      Subcommands to run       [default: all except ifs-comparison]
 #   --polar-vortex-extra Extra args for polar-vortex (e.g. '--channels u_29 u_55')
 #   --dry-run            Print commands, do not execute
 #   --devel              Use develbooster partition (short jobs)
 #   --help               Show this help
 # ============================================================================
-#SBATCH --account=weatherai
-#SBATCH --time=0-11:59:00
+#SBATCH --account=hclimrep
+#SBATCH --time=0-01:59:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
@@ -48,6 +52,7 @@ CONFIG="config/evaluate/ssw_feb2018.yml"
 DATA_DIR="results"
 OUTPUT_DIR="plots/ssw_analyze"
 CLIMATOLOGY=""
+IFS_FILE=""
 DRY_RUN=false
 POLAR_VORTEX_EXTRA=""
 
@@ -63,6 +68,7 @@ while [[ $# -gt 0 ]]; do
         --data-dir)         DATA_DIR="$2";           shift 2 ;;
         --output-dir)       OUTPUT_DIR="$2";         shift 2 ;;
         --climatology)      CLIMATOLOGY="$2";        shift 2 ;;
+        --ifs-file)         IFS_FILE="$2";           shift 2 ;;
         --polar-vortex-extra) POLAR_VORTEX_EXTRA="$2"; shift 2 ;;
         --run)
             shift
@@ -81,9 +87,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Default: run all four subcommands
+# Default: run everything except ifs-comparison (needs an external --ifs-file)
 if [[ ${#RUN_CMDS[@]} -eq 0 ]]; then
-    RUN_CMDS=(polar-vortex ssw-lead-times polar-maps vertical-structure polar-cap-temperature qg-tem)
+    RUN_CMDS=(polar-vortex ssw-lead-times polar-maps vertical-structure polar-cap-temperature qg-tem precursors nam)
 fi
 
 # ---------------------------------------------------------------------------
@@ -148,6 +154,7 @@ echo "  Config:     ${CONFIG}"
 echo "  Data dir:   ${DATA_DIR}"
 echo "  Output dir: ${OUTPUT_DIR}"
 echo "  Climatology:${CLIMATOLOGY:-none}"
+echo "  IFS file:   ${IFS_FILE:-none}"
 echo "  Commands:   ${RUN_CMDS[*]}"
 echo "  Dry run:    ${DRY_RUN}"
 echo "======================================================="
@@ -172,6 +179,27 @@ for subcmd in "${RUN_CMDS[@]}"; do
             run_cmd polar-cap-temperature ;;
         qg-tem)
             run_cmd qg-tem ;;
+        precursors)
+            run_cmd precursors ;;
+        nam)
+            run_cmd nam ;;
+        ifs-comparison)
+            if [[ -z "${IFS_FILE:-}" ]]; then
+                echo "WARNING: skipping ifs-comparison, --ifs-file not set" >&2
+            else
+                # ifs-comparison has no --data-dir arg, so bypass run_cmd
+                cmd=(
+                    ${RUNNER} ssw-analyze ifs-comparison
+                    --validations-config "${CONFIG}"
+                    --ifs-file            "${IFS_FILE}"
+                    --output-dir          "${OUTPUT_DIR}/ifs-comparison"
+                )
+                echo ""
+                echo ">>> ${cmd[*]}"
+                if [[ "${DRY_RUN}" == false ]]; then
+                    "${cmd[@]}"
+                fi
+            fi ;;
         *)
             echo "WARNING: unknown subcommand '${subcmd}', skipping" >&2 ;;
     esac
