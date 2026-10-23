@@ -56,7 +56,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 from scipy.ndimage import gaussian_filter
-from weathergen.stratosphere.config import load_validations_config
+from weathergen.stratosphere.config import (
+    event_reference_date,
+    group_validations_by_event,
+    load_validations_config,
+)
 from weathergen.stratosphere.io import (
     convert_times_to_datetime,
     get_channels,
@@ -65,12 +69,11 @@ from weathergen.stratosphere.io import (
     get_stream,
     load_step,
     open_validation,
+    zarr_store_path,
 )
 from weathergen.stratosphere.levels import build_full_level_map
 
 _logger = logging.getLogger(__name__)
-
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Physical constants
 _EARTH_RADIUS = 6.371e6  # m
@@ -928,76 +931,89 @@ def main(argv: list[str] | None = None) -> None:
     print("=" * 60)
 
     cfg = load_validations_config(args.validations_config)
-    run_specs = [
-        (
-            label,
-            spec["id"],
-            spec.get("sample", 0),
-            spec.get("lead_days", 0),
-            spec.get("color", "C0"),
+    events = group_validations_by_event(cfg)
+    single_event = len(events) == 1
+
+    for event_name, event_cfg in events.items():
+        event_ssw_date = event_reference_date(event_cfg, args.ssw_date)
+        event_output_dir = (
+            args.output_dir if single_event else args.output_dir / event_name
         )
-        for label, spec in cfg.items()
-    ]
 
-    data_list: list[dict[str, Any]] = []
+        run_specs = [
+            (
+                label,
+                spec["id"],
+                spec.get("sample", 0),
+                spec.get("rank", 0),
+                spec.get("lead_days", 0),
+                spec.get("color", "C0"),
+            )
+            for label, spec in event_cfg.items()
+        ]
 
-    # Phase 1: Extract all diagnostics (each run keeps its own onset-relative axis)
-    for label, run_id, sample, lead_days, color in run_specs:
-        zarr_path = args.data_dir / run_id / _ZARR_FNAME
+        data_list: list[dict[str, Any]] = []
 
-        if not zarr_path.exists():
-            _logger.warning("Store not found, skipping %s: %s", label, zarr_path)
+        # Phase 1: Extract all diagnostics (each run keeps its own onset-relative axis)
+        for label, run_id, sample, rank, lead_days, color in run_specs:
+            zarr_path = zarr_store_path(args.data_dir, run_id, rank)
+
+            if not zarr_path.exists():
+                _logger.warning("Store not found, skipping %s: %s", label, zarr_path)
+                continue
+
+            data = extract_qg_tem(
+                zarr_path,
+                label,
+                sample,
+                lat_width=args.lat_width,
+                lead_days=lead_days,
+                color=color,
+                ssw_date=event_ssw_date,
+            )
+            if data is None:
+                _logger.warning("Skipping %s — extraction failed.", label)
+                continue
+
+            data_list.append(data)
+
+        if not data_list:
+            _logger.warning("[%s] No data extracted — skipping event.", event_name)
             continue
 
-        data = extract_qg_tem(
-            zarr_path,
-            label,
-            sample,
-            lat_width=args.lat_width,
-            lead_days=lead_days,
-            color=color,
-            ssw_date=args.ssw_date,
-        )
-        if data is None:
-            _logger.warning("Skipping %s — extraction failed.", label)
-            continue
+        # Phase 2: Per-experiment plots (each on its own onset-relative time axis)
+        for data in data_list:
+            label = data["label"]
+            exp_dir = event_output_dir / label
+            exp_dir.mkdir(parents=True, exist_ok=True)
 
-        data_list.append(data)
+            p_range = tuple(args.p_range)  # type: ignore[arg-type]
+            plot_ep_flux_divergence_hovmoller(
+                data,
+                exp_dir,
+                clim=args.clim_divF,
+                p_range=p_range,
+            )
+            plot_ep_flux_vectors(data, exp_dir, clim=args.clim_divF, p_range=p_range)
+            plot_v_residual_hovmoller(data, exp_dir, clim=args.clim_vstar, p_range=p_range)
 
-    # Phase 2: Per-experiment plots (each on its own onset-relative time axis)
-    for data in data_list:
-        label = data["label"]
-        exp_dir = args.output_dir / label
-        exp_dir.mkdir(parents=True, exist_ok=True)
+            # Save numpy archive
+            npz_path = exp_dir / "qg_tem_diagnostics.npz"
+            np.savez_compressed(
+                npz_path,
+                lat_centres=data["lat_centres"],
+                pressures_hpa=data["pressures_hpa"],
+                **{f"pred_{k}": v for k, v in data["pred"].items()},
+                **{f"tgt_{k}": v for k, v in data["tgt"].items()},
+            )
+            _logger.info("Saved %s", npz_path)
 
-        p_range = tuple(args.p_range)  # type: ignore[arg-type]
-        plot_ep_flux_divergence_hovmoller(
-            data,
-            exp_dir,
-            clim=args.clim_divF,
-            p_range=p_range,
-        )
-        plot_ep_flux_vectors(data, exp_dir, clim=args.clim_divF, p_range=p_range)
-        plot_v_residual_hovmoller(data, exp_dir, clim=args.clim_vstar, p_range=p_range)
-
-        # Save numpy archive
-        npz_path = exp_dir / "qg_tem_diagnostics.npz"
-        np.savez_compressed(
-            npz_path,
-            lat_centres=data["lat_centres"],
-            pressures_hpa=data["pressures_hpa"],
-            **{f"pred_{k}": v for k, v in data["pred"].items()},
-            **{f"tgt_{k}": v for k, v in data["tgt"].items()},
-        )
-        _logger.info("Saved %s", npz_path)
-
-    # Phase 4: Multi-experiment time series
-    if data_list:
-        args.output_dir.mkdir(parents=True, exist_ok=True)
+        # Phase 4: Multi-experiment time series (per event, to stay readable)
+        event_output_dir.mkdir(parents=True, exist_ok=True)
         plot_polar_cap_efd_timeseries(
             data_list,
-            args.output_dir,
-            args.ssw_date,
+            event_output_dir,
+            event_ssw_date,
             args.polar_lat_min,
         )
 

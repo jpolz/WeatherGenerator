@@ -23,8 +23,17 @@ Manifest schema::
           model_label: <model_name>
           init_date: <YYYYMMDDhhmm>
           fsteps: <int>
+          rank: <SLURM rank whose zarr store holds this lead's sample (default: 0)>
+          sample: <local sample index within that rank's store (default: 0)>
           submitted_at: <"YYYY-MM-DD HH:MM:SS">
           status: submitted | done | failed | missing
+
+``rank``/``sample`` exist because a single consolidated submission (one job
+covering several leads via ``test_config.date_ranges``) shards its dates
+across SLURM ranks: each rank writes its own zarr store
+(``validation_chkpt{epoch:05d}_rank{rank:04d}.zip``) containing only the
+dates assigned to it, indexed locally starting at 0. Two leads sharing the
+same ``run_id`` therefore do NOT necessarily share the same store file.
 """
 
 from __future__ import annotations
@@ -79,6 +88,8 @@ def upsert_entry(
     init_date: str,
     fsteps: int,
     submitted_at: str,
+    rank: int = 0,
+    sample: int = 0,
     status: str = DEFAULT_STATUS,
 ) -> dict[str, Any]:
     """Insert or overwrite the (event, model, lead) entry in-place and return it."""
@@ -90,6 +101,8 @@ def upsert_entry(
         "model_label": model_label,
         "init_date": init_date,
         "fsteps": int(fsteps),
+        "rank": int(rank),
+        "sample": int(sample),
         "submitted_at": submitted_at,
         "status": status,
     }

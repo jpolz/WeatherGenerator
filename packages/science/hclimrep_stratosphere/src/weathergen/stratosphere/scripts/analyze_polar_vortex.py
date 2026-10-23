@@ -28,8 +28,9 @@ Or as a module::
 from __future__ import annotations
 
 import argparse
+import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -47,12 +48,10 @@ from weathergen.stratosphere.io import (
     get_stream,
     load_step,
     open_validation,
+    zarr_store_path,
 )
 
 _logger = logging.getLogger(__name__)
-
-# Default zarr filename produced by WeatherGenerator inference
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Default channels to extract (priority order; first match per variable is used)
 _DEFAULT_U_CHANNELS = ["u_29", "u_55"]  # ERA5ml (model-level indices; u_29 ~ 10hPa)
@@ -276,6 +275,61 @@ def _merge_targets(
     return [t for t, _ in sorted_items], [v for _, v in sorted_items]
 
 
+# ---------------------------------------------------------------------------
+# Hit/miss-by-init-time (for later grouping into lead-time hit rates)
+# ---------------------------------------------------------------------------
+
+
+def compute_hit_miss(
+    data_list: list[dict[str, Any]],
+    channel: str,
+    event_date: datetime,
+    window_days: float = 1.0,
+    threshold: float = 0.0,
+) -> list[dict[str, Any]]:
+    """
+    Per-run hit/miss of the u-wind reversal around *event_date*.
+
+    A run "hits" if its (ensemble-mean) prediction for *channel* drops below
+    *threshold* at any verifying time within
+    ``[event_date - window_days, event_date + window_days]``.  Each run's
+    init time is simply its first datetime — one record per run, keyed by
+    init time, with no grouping applied (left to downstream analysis, e.g.
+    bucketing by nominal IFS S2S cycle or by lead time).
+
+    Returns a list of dicts::
+
+        {
+            "label": str,
+            "init_time": "YYYY-MM-DDTHH:MM:SS",
+            "hit": bool | None,  # None when the window isn't covered at all
+        }
+    """
+    window_lo = event_date - timedelta(days=window_days)
+    window_hi = event_date + timedelta(days=window_days)
+
+    records: list[dict[str, Any]] = []
+    for data in data_list:
+        if channel not in data["channels"]:
+            continue
+
+        datetimes = data["datetimes"]
+        pred_arr = np.asarray(data["channels"][channel]["predictions"])
+        pred_for_ssw = pred_arr.mean(axis=1) if pred_arr.ndim == 2 else pred_arr
+
+        mask = np.array([window_lo <= dt <= window_hi for dt in datetimes])
+        hit = bool(np.any(pred_for_ssw[mask] < threshold)) if mask.any() else None
+
+        records.append(
+            {
+                "label": data["label"],
+                "init_time": datetimes[0].isoformat(),
+                "hit": hit,
+            }
+        )
+    return sorted(records, key=lambda r: r["init_time"])
+
+
 def plot_zonal_wind_comparison(
     data_list: list[dict[str, Any]],
     output_dir: Path,
@@ -363,7 +417,10 @@ def plot_zonal_wind_comparison(
         ax.set_ylabel(ylabel)
         ax.set_title(f"Zonal mean u{title_suffix} at 60°N — {ch}", fontweight="bold")
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=9)
+        # Legend disabled for now — too many experiments make it unreadable
+        # (see analyze_polar_cap_temperature.plot_polar_cap_temperature for the
+        # same change). Re-enable once a more compact scheme (e.g. colorbar by
+        # init date) is in place.
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
         plt.tight_layout()
@@ -380,17 +437,41 @@ def plot_zonal_wind_comparison(
 # ---------------------------------------------------------------------------
 
 
-def _build_run_specs(
+def _build_event_groups(
     args: argparse.Namespace,
-) -> list[tuple[str, str, int, str | None]]:
-    """Return list of (label, validation_id, sample, color) tuples."""
+) -> dict[str, tuple[list[tuple[str, str, int, int, str | None]], datetime]]:
+    """
+    Return event name → (list of (label, validation_id, sample, rank, color),
+    event SSW reference date).
+
+    When ``--validations-config`` is given, entries are split by their
+    ``event``/``group`` field (see
+    :func:`weathergen.stratosphere.config.group_validations_by_event`) so
+    configs bundling several real-world SSW events produce one set of plots
+    per event instead of one unreadable combined plot.  ``--run-ids`` (no
+    config) always yields a single ``"default"`` event using ``args.ssw_date``.
+    """
     if args.validations_config is not None:
-        from weathergen.stratosphere.config import load_validations_config
+        from weathergen.stratosphere.config import (
+            event_reference_date,
+            group_validations_by_event,
+            load_validations_config,
+        )
 
         cfg = load_validations_config(args.validations_config)
-        return [(lbl, spec["id"], spec["sample"], spec.get("color")) for lbl, spec in cfg.items()]
+        events = group_validations_by_event(cfg)
+        return {
+            event_name: (
+                [
+                    (lbl, spec["id"], spec["sample"], spec.get("rank", 0), spec.get("color"))
+                    for lbl, spec in event_cfg.items()
+                ],
+                event_reference_date(event_cfg, args.ssw_date),
+            )
+            for event_name, event_cfg in events.items()
+        }
     if args.run_ids:
-        return [(vid, vid, 0, None) for vid in args.run_ids]
+        return {"default": ([(vid, vid, 0, 0, None) for vid in args.run_ids], args.ssw_date)}
     raise SystemExit("Provide --run-ids or --validations-config")
 
 
@@ -405,49 +486,124 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--latitude", type=float, default=60.0)
     parser.add_argument("--climatology", type=Path, default=None,
                         help="Path to climatology zarr for anomaly computation.")
+    parser.add_argument(
+        "--ssw-date",
+        type=lambda s: datetime.strptime(s, "%Y-%m-%d"),
+        default=SSW_DATE,
+        help="SSW onset date for reference line (YYYY-MM-DD).  [default: 2018-02-12]",
+    )
+    parser.add_argument(
+        "--hit-miss-window-days",
+        type=float,
+        default=1.0,
+        help=(
+            "Half-width (days) of the window around each event's reference "
+            "date used for the per-init-time hit/miss JSON.  [default: 1.0]"
+        ),
+    )
+    parser.add_argument(
+        "--hit-miss-threshold",
+        type=float,
+        default=0.0,
+        help="u-wind threshold (m/s) below which a reversal counts as a hit.  [default: 0.0]",
+    )
     args = parser.parse_args(argv)
 
-    run_specs = _build_run_specs(args)
-    all_data: list[dict[str, Any]] = []
+    event_groups = _build_event_groups(args)
+    single_event = len(event_groups) == 1
 
-    for label, vid, sample, color in run_specs:
-        zarr_path = args.data_dir / vid / _ZARR_FNAME
-        if not zarr_path.exists():
-            _logger.warning("Zarr not found: %s", zarr_path)
-            continue
-
-        data = extract_zonal_wind(
-            zarr_path,
-            label,
-            channels_override=args.channels,
-            sample=sample,
-            target_latitude=args.latitude,
-            climatology_path=args.climatology,
+    for event_name, (run_specs, event_ssw_date) in event_groups.items():
+        event_output_dir = (
+            args.output_dir if single_event else args.output_dir / event_name
         )
-        if data is None:
+        all_data: list[dict[str, Any]] = []
+
+        for label, vid, sample, rank, color in run_specs:
+            zarr_path = zarr_store_path(args.data_dir, vid, rank)
+            if not zarr_path.exists():
+                _logger.warning("Zarr not found: %s", zarr_path)
+                continue
+
+            data = extract_zonal_wind(
+                zarr_path,
+                label,
+                channels_override=args.channels,
+                sample=sample,
+                target_latitude=args.latitude,
+                climatology_path=args.climatology,
+            )
+            if data is None:
+                continue
+            data["color"] = color
+            all_data.append(data)
+
+            for ch, ch_data in data["channels"].items():
+                pred_arr = np.asarray(ch_data["predictions"])
+                # Use ensemble mean for SSW detection when multiple members are present
+                pred_for_ssw = pred_arr.mean(axis=1) if pred_arr.ndim == 2 else pred_arr
+                pred_ssw = detect_ssw_reversal(pred_for_ssw, data["datetimes"])
+                tgt_ssw = detect_ssw_reversal(ch_data["targets"], data["datetimes"])
+                _logger.info(
+                    "[%s] %s / %s  pred=%s  target=%s",
+                    event_name,
+                    label,
+                    ch,
+                    pred_ssw,
+                    tgt_ssw,
+                )
+
+        if not all_data:
+            _logger.warning("[%s] No data extracted — skipping event.", event_name)
             continue
-        data["color"] = color
-        all_data.append(data)
 
-        for ch, ch_data in data["channels"].items():
-            pred_arr = np.asarray(ch_data["predictions"])
-            # Use ensemble mean for SSW detection when multiple members are present
-            pred_for_ssw = pred_arr.mean(axis=1) if pred_arr.ndim == 2 else pred_arr
-            pred_ssw = detect_ssw_reversal(pred_for_ssw, data["datetimes"])
-            tgt_ssw = detect_ssw_reversal(ch_data["targets"], data["datetimes"])
-            _logger.info("%s / %s  pred=%s  target=%s", label, ch, pred_ssw, tgt_ssw)
-
-    if all_data:
-        event_tag = ""
-        if args.validations_config is not None:
+        # Keep the historical filename tag (derived from the config's
+        # filename stem) when there is only one event, for backward
+        # compatibility; otherwise tag filenames with the actual event name.
+        if single_event and args.validations_config is not None:
             stem = args.validations_config.stem  # e.g. "ssw_feb2018"
             parts = stem.split("_", 1)
             event_tag = parts[1] if len(parts) == 2 else stem
-        plot_zonal_wind_comparison(all_data, args.output_dir, event_tag=event_tag)
+        else:
+            event_tag = event_name
+
+        plot_zonal_wind_comparison(
+            all_data, event_output_dir, ssw_date=event_ssw_date, event_tag=event_tag
+        )
         if any(d.get("is_anomaly") for d in all_data):
             plot_zonal_wind_comparison(
-                all_data, args.output_dir, event_tag=event_tag, use_anomaly=True
+                all_data,
+                event_output_dir,
+                ssw_date=event_ssw_date,
+                event_tag=event_tag,
+                use_anomaly=True,
             )
+
+        # Per-init-time hit/miss JSON (one list per channel) — a raw,
+        # ungrouped record of which runs' predictions reversed near
+        # event_ssw_date, left for downstream grouping (e.g. by nominal IFS
+        # S2S cycle or by lead time) rather than aggregated here.
+        all_channels = sorted({ch for d in all_data for ch in d["channels"]})
+        hit_miss: dict[str, Any] = {
+            "event": event_name,
+            "event_date": event_ssw_date.isoformat(),
+            "window_days": args.hit_miss_window_days,
+            "threshold": args.hit_miss_threshold,
+            "channels": {
+                ch: compute_hit_miss(
+                    all_data,
+                    ch,
+                    event_ssw_date,
+                    window_days=args.hit_miss_window_days,
+                    threshold=args.hit_miss_threshold,
+                )
+                for ch in all_channels
+            },
+        }
+        event_output_dir.mkdir(parents=True, exist_ok=True)
+        hit_miss_path = event_output_dir / f"hit_miss_{event_tag}.json"
+        with open(hit_miss_path, "w") as f:
+            json.dump(hit_miss, f, indent=2)
+        _logger.info("[%s] Saved %s", event_name, hit_miss_path)
 
 
 if __name__ == "__main__":

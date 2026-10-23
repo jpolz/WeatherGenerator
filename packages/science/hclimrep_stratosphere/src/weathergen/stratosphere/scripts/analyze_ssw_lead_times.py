@@ -38,12 +38,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from weathergen.stratosphere.config import load_validations_config
 from weathergen.stratosphere.diagnostics import detect_ssw_reversal
+from weathergen.stratosphere.io import zarr_store_path
 from weathergen.stratosphere.levels import channel_pressure
 from weathergen.stratosphere.scripts.analyze_polar_vortex import extract_zonal_wind
 
 _logger = logging.getLogger(__name__)
 
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 SSW_DATE = datetime(2018, 2, 12)
 
 _FALLBACK_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628"]
@@ -115,10 +115,11 @@ def load_experiment_group(
     for label, spec in group_cfg.items():
         val_id = spec["id"]
         sample = spec.get("sample", 0)
+        rank = spec.get("rank", 0)
         lead_days = spec.get("lead_days")
         color = spec.get("color")
 
-        zarr_path = data_dir / val_id / _ZARR_FNAME
+        zarr_path = zarr_store_path(data_dir, val_id, rank)
         if not zarr_path.exists():
             _logger.warning("Zarr not found, skipping %s: %s", label, zarr_path)
             continue

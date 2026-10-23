@@ -25,6 +25,7 @@ array and are independent of the zarr backend.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
@@ -36,6 +37,32 @@ _logger = logging.getLogger(__name__)
 # Public re-export so callers only need to import from this module
 # ---------------------------------------------------------------------------
 open_validation = zarrio_reader  # context-manager: open_validation(path) -> ZarrIO
+
+
+# ---------------------------------------------------------------------------
+# Zarr store path resolution
+# ---------------------------------------------------------------------------
+
+
+def zarr_store_name(rank: int = 0, mini_epoch: int = 0) -> str:
+    """
+    Return the validation zarr store filename written by the trainer for a
+    given SLURM rank and mini_epoch (see ``config.get_path_results``).
+
+    Each rank writes its own store, and with the ``date_ranges`` ("init date
+    list") inference feature, a single run can spread its requested init
+    dates across multiple ranks — so ``rank`` must be tracked alongside
+    ``sample`` (which is local to that rank's store) to locate a specific
+    forecast on disk.
+    """
+    return f"validation_chkpt{mini_epoch:05d}_rank{rank:04d}.zip"
+
+
+def zarr_store_path(
+    data_dir: Path, run_id: str, rank: int = 0, mini_epoch: int = 0
+) -> Path:
+    """Resolve the on-disk zarr store path for a given run, rank, and mini_epoch."""
+    return Path(data_dir) / run_id / zarr_store_name(rank, mini_epoch)
 
 
 # ---------------------------------------------------------------------------

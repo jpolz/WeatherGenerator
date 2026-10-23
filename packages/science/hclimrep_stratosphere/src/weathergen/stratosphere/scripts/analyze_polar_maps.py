@@ -60,11 +60,10 @@ from weathergen.stratosphere.io import (
     get_forecast_steps,
     load_step,
     open_validation,
+    zarr_store_path,
 )
 
 _logger = logging.getLogger(__name__)
-
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Default SSW reference date (Feb 2018 event)
 SSW_DATE = datetime(2018, 2, 12)
@@ -652,22 +651,29 @@ def main(argv: list[str] | None = None) -> None:
     # Resolve run specs from config or CLI
     if args.validations_config:
         cfg = load_validations_config(args.validations_config)
-        # Deduplicate zarr IDs while keeping first label
-        seen: set[str] = set()
+        # Deduplicate (zarr ID, rank, sample) while keeping first label; a single
+        # run_id can now hold many samples spread across ranks (date_ranges
+        # inference), so dedup must key on more than just the run_id.
+        seen: set[tuple[str, int, int]] = set()
         run_specs = []
         for label, v in cfg.items():
-            if v["id"] not in seen:
-                seen.add(v["id"])
+            rank = v.get("rank", 0)
+            sample = v.get("sample", args.sample)
+            key = (v["id"], rank, sample)
+            if key not in seen:
+                seen.add(key)
                 run_specs.append(
                     {
                         "id": v["id"],
                         "label": label,
-                        "sample": v.get("sample", args.sample),
+                        "sample": sample,
+                        "rank": rank,
                     }
                 )
     else:
         run_specs = [
-            {"id": rid, "label": rid, "sample": args.sample} for rid in args.run_ids
+            {"id": rid, "label": rid, "sample": args.sample, "rank": 0}
+            for rid in args.run_ids
         ]
 
     # -----------------------------------------------------------------------
@@ -678,7 +684,7 @@ def main(argv: list[str] | None = None) -> None:
         t_data: list[dict[str, Any]] = []
 
         for spec in run_specs:
-            zarr_path = args.data_dir / spec["id"] / _ZARR_FNAME
+            zarr_path = zarr_store_path(args.data_dir, spec["id"], spec["rank"])
             if not zarr_path.exists():
                 _logger.warning("zarr not found, skipping: %s", zarr_path)
                 continue
@@ -703,7 +709,7 @@ def main(argv: list[str] | None = None) -> None:
     # -----------------------------------------------------------------------
     surface_data: list[dict[str, Any]] = []
     for spec in run_specs:
-        zarr_path = args.data_dir / spec["id"] / _ZARR_FNAME
+        zarr_path = zarr_store_path(args.data_dir, spec["id"], spec["rank"])
         if not zarr_path.exists():
             continue
         result = extract_surface_variable(

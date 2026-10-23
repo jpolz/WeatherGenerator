@@ -46,7 +46,11 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from weathergen.stratosphere.config import load_validations_config
+from weathergen.stratosphere.config import (
+    event_reference_date,
+    group_validations_by_event,
+    load_validations_config,
+)
 from weathergen.stratosphere.diagnostics import (
     nam_index_eof_reference,
     nam_index_eof_project,
@@ -59,11 +63,10 @@ from weathergen.stratosphere.io import (
     get_forecast_steps,
     load_step,
     open_validation,
+    zarr_store_path,
 )
 
 _logger = logging.getLogger(__name__)
-
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # The only 3 pressure levels available in the era5_strato_final ERA5pl stream.
 _NAM_LEVELS = [50, 500, 850]
@@ -401,40 +404,55 @@ def main(argv: list[str] | None = None) -> None:
     print("=" * 60)
 
     cfg = load_validations_config(args.validations_config)
-    run_specs = [
-        (
-            label,
-            spec["id"],
-            spec.get("sample", 0),
-            spec.get("lead_days") or 0,
-            spec.get("color") or _COLORS[i % len(_COLORS)],
-        )
-        for i, (label, spec) in enumerate(cfg.items())
-    ]
+    events = group_validations_by_event(cfg)
+    single_event = len(events) == 1
 
-    data_list: list[dict[str, Any]] = []
-    for label, run_id, sample, lead_days, color in run_specs:
-        zarr_path = args.data_dir / run_id / _ZARR_FNAME
-        if not zarr_path.exists():
-            _logger.warning("Store not found, skipping %s: %s", label, zarr_path)
+    for event_name, event_cfg in events.items():
+        event_ssw_date = event_reference_date(event_cfg, args.ssw_date)
+        event_output_dir = (
+            args.output_dir if single_event else args.output_dir / event_name
+        )
+
+        run_specs = [
+            (
+                label,
+                spec["id"],
+                spec.get("sample", 0),
+                spec.get("rank", 0),
+                spec.get("lead_days") or 0,
+                spec.get("color") or _COLORS[i % len(_COLORS)],
+            )
+            for i, (label, spec) in enumerate(event_cfg.items())
+        ]
+
+        data_list: list[dict[str, Any]] = []
+        for label, run_id, sample, rank, lead_days, color in run_specs:
+            zarr_path = zarr_store_path(args.data_dir, run_id, rank)
+            if not zarr_path.exists():
+                _logger.warning("Store not found, skipping %s: %s", label, zarr_path)
+                continue
+
+            data = extract_nam(
+                zarr_path,
+                label,
+                sample,
+                min_lat=args.min_lat,
+                climatology_path=args.climatology,
+                lead_days=lead_days,
+                color=color,
+                ssw_date=event_ssw_date,
+            )
+            if data is None:
+                _logger.warning("Skipping %s — extraction failed.", label)
+                continue
+            data_list.append(data)
+
+        if not data_list:
+            _logger.warning("[%s] No data extracted — skipping event.", event_name)
             continue
 
-        data = extract_nam(
-            zarr_path,
-            label,
-            sample,
-            min_lat=args.min_lat,
-            climatology_path=args.climatology,
-            lead_days=lead_days,
-            color=color,
-            ssw_date=args.ssw_date,
-        )
-        if data is None:
-            _logger.warning("Skipping %s — extraction failed.", label)
-            continue
-        data_list.append(data)
+        plot_nam(data_list, event_output_dir, event_ssw_date)
 
-    plot_nam(data_list, args.output_dir, args.ssw_date)
     print("Analysis complete.")
 
 

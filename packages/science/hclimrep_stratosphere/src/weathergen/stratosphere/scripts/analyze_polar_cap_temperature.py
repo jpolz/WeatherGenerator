@@ -37,7 +37,11 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-from weathergen.stratosphere.config import load_validations_config
+from weathergen.stratosphere.config import (
+    event_reference_date,
+    group_validations_by_event,
+    load_validations_config,
+)
 from weathergen.stratosphere.diagnostics import detect_warming_event
 from weathergen.stratosphere.io import (
     convert_times_to_datetime,
@@ -48,12 +52,11 @@ from weathergen.stratosphere.io import (
     get_forecast_steps,
     get_stream,
     open_validation,
+    zarr_store_path,
 )
 from weathergen.stratosphere.levels import channel_pressure
 
 _logger = logging.getLogger(__name__)
-
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Default model levels for polar-cap temperature (≈ 2.5, 10, 28, 50 hPa).
 # Override with --t-channels to use a different set.
@@ -79,6 +82,7 @@ def extract_polar_cap_temperature(
     min_latitude: float = 60.0,
     sample: int = 0,
     t_channels_override: list[str] | None = None,
+    color: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Extract area-weighted polar cap mean temperature poleward of *min_latitude*.
@@ -96,12 +100,15 @@ def extract_polar_cap_temperature(
         Southern boundary of the polar cap (°N).  Default 60°N.
     sample:
         Ensemble/sample index to extract.
+    color:
+        Optional plot colour (from the validations config), carried through
+        to the returned dict for :func:`plot_polar_cap_temperature`.
 
     Returns
     -------
     Dict with keys ``label``, ``channels``, ``times``, ``datetimes``,
-    ``min_latitude``, ``n_points``; or ``None`` if no temperature channels
-    are available.
+    ``min_latitude``, ``n_points``, ``color``; or ``None`` if no temperature
+    channels are available.
     """
     _logger.info(
         "%s: extracting polar cap temperature (lat≥%.1f°N)…", label, min_latitude
@@ -182,6 +189,7 @@ def extract_polar_cap_temperature(
         "datetimes": datetimes,
         "min_latitude": min_latitude,
         "n_points": int(len(polar_indices)),
+        "color": color,
     }
 
 
@@ -205,6 +213,31 @@ def _load_step_data(
 # ---------------------------------------------------------------------------
 
 
+def _merge_targets(
+    data_list: list[dict[str, Any]], channel: str
+) -> tuple[list[datetime], list[float]]:
+    """
+    Merge ERA5 target time series from multiple runs into one, analogous to
+    :func:`analyze_polar_vortex._merge_targets`.
+
+    Runs sharing overlapping init windows report (near-)identical ERA5
+    values for the same valid time, so a single merged line is a faithful
+    (and far less cluttered) stand-in for plotting each run's own target.
+    """
+    seen: dict[datetime, float] = {}
+    for d in data_list:
+        if channel not in d["channels"]:
+            continue
+        ch_data = d["channels"][channel]
+        for dt, val in zip(d["datetimes"], ch_data["targets"], strict=False):
+            if dt not in seen:
+                seen[dt] = val
+    if not seen:
+        return [], []
+    sorted_items = sorted(seen.items())
+    return [t for t, _ in sorted_items], [v for _, v in sorted_items]
+
+
 def plot_polar_cap_temperature(
     data_list: list[dict[str, Any]],
     output_dir: Path,
@@ -213,9 +246,10 @@ def plot_polar_cap_temperature(
     """
     Plot polar cap mean temperature time series, one panel per pressure level.
 
-    Each panel shows predictions (solid) and ERA5 targets (dashed) for every
-    experiment in *data_list*.  A vertical reference line marks *ssw_date* if
-    it falls within the plotted period.
+    Each panel shows one prediction line per experiment (coloured per the
+    validations config, same as :func:`analyze_polar_vortex.plot_zonal_wind_comparison`)
+    and a single merged ERA5 target line.  A vertical reference line marks
+    *ssw_date* if it falls within the plotted period.
 
     Parameters
     ----------
@@ -246,15 +280,15 @@ def plot_polar_cap_temperature(
         p_hpa = channel_pressure(channel)
         level_label = f"{channel}  ({p_hpa:.0f} hPa)" if p_hpa is not None else channel
 
-        # Plot each experiment that contains this channel
+        # One prediction line per experiment, using the experiment's own
+        # config colour when set (falls back to a cyclic palette otherwise).
         for color_idx, data in enumerate(data_list):
             if channel not in data["channels"]:
                 continue
 
-            label = data["label"]
             datetimes = data["datetimes"]
             ch_data = data["channels"][channel]
-            color = _COLORS[color_idx % len(_COLORS)]
+            color = data.get("color") or _COLORS[color_idx % len(_COLORS)]
 
             ax.plot(
                 datetimes,
@@ -262,18 +296,13 @@ def plot_polar_cap_temperature(
                 color=color,
                 linestyle="-",
                 linewidth=2.5,
-                label=f"{label} prediction",
                 alpha=0.85,
             )
-            ax.plot(
-                datetimes,
-                ch_data["targets"],
-                color=color,
-                linestyle="--",
-                linewidth=2.0,
-                label=f"{label} ERA5",
-                alpha=0.6,
-            )
+
+        # Single merged ERA5 target line
+        tgt_times, tgt_vals = _merge_targets(data_list, channel)
+        if tgt_times:
+            ax.plot(tgt_times, tgt_vals, color="k", lw=2, ls="--", alpha=0.8)
 
         # SSW reference line (only if date falls in range)
         all_dts = [dt for data in data_list for dt in data["datetimes"]]
@@ -284,7 +313,6 @@ def plot_polar_cap_temperature(
                 linestyle="-.",
                 linewidth=2,
                 alpha=0.7,
-                label=f"SSW onset ({ssw_date.strftime('%b %d, %Y')})",
                 zorder=1,
             )
 
@@ -295,7 +323,10 @@ def plot_polar_cap_temperature(
             fontsize=13,
             fontweight="bold",
         )
-        ax.legend(loc="best", fontsize=9, ncol=2)
+        # Legend disabled for now — too many experiments make it unreadable
+        # (see analyze_polar_vortex.plot_zonal_wind_comparison for the same
+        # change). Re-enable once a more compact scheme (e.g. colorbar by
+        # init date) is in place.
         ax.grid(True, alpha=0.3)
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
@@ -368,61 +399,86 @@ def main(argv: list[str] | None = None) -> None:
     print("=" * 60)
 
     cfg = load_validations_config(args.validations_config)
-    run_specs = [(label, spec["id"], spec["sample"]) for label, spec in cfg.items()]
+    events = group_validations_by_event(cfg)
+    single_event = len(events) == 1
 
-    data_list: list[dict] = []
     results: dict[str, Any] = {}
+    any_data = False
 
-    for label, run_id, sample in run_specs:
-        zarr_path = args.data_dir / run_id / _ZARR_FNAME
-
-        if not zarr_path.exists():
-            _logger.warning("Store not found, skipping %s: %s", label, zarr_path)
-            continue
-
-        data = extract_polar_cap_temperature(
-            zarr_path,
-            label,
-            args.min_latitude,
-            sample,
-            t_channels_override=args.t_channels,
+    for event_name, event_cfg in events.items():
+        event_ssw_date = event_reference_date(event_cfg, args.ssw_date)
+        # Keep the flat (un-nested) output layout when there is only one
+        # event, so existing single-event configs are unaffected.
+        event_output_dir = (
+            args.output_dir if single_event else args.output_dir / event_name
         )
 
-        if data is None:
-            _logger.warning("Skipping %s — no suitable temperature channels.", label)
+        run_specs = [
+            (label, spec["id"], spec["sample"], spec.get("rank", 0), spec.get("color"))
+            for label, spec in event_cfg.items()
+        ]
+
+        data_list: list[dict] = []
+
+        for label, run_id, sample, rank, color in run_specs:
+            zarr_path = zarr_store_path(args.data_dir, run_id, rank)
+
+            if not zarr_path.exists():
+                _logger.warning("Store not found, skipping %s: %s", label, zarr_path)
+                continue
+
+            data = extract_polar_cap_temperature(
+                zarr_path,
+                label,
+                args.min_latitude,
+                sample,
+                t_channels_override=args.t_channels,
+                color=color,
+            )
+
+            if data is None:
+                _logger.warning("Skipping %s — no suitable temperature channels.", label)
+                continue
+
+            data_list.append(data)
+
+            # Detect warming events per channel
+            results.setdefault(event_name, {})[label] = {}
+            for ch, ch_data in data["channels"].items():
+                pred_event = detect_warming_event(ch_data["predictions"], data["datetimes"])
+                tgt_event = detect_warming_event(ch_data["targets"], data["datetimes"])
+
+                _logger.info(
+                    "[%s] %s  %s  pred=%s  tgt=%s",
+                    event_name,
+                    label,
+                    ch,
+                    pred_event,
+                    tgt_event,
+                )
+                results[event_name][label][ch] = {
+                    "prediction": pred_event,
+                    "target": tgt_event,
+                }
+
+        if not data_list:
+            _logger.warning("[%s] No data extracted — skipping event.", event_name)
             continue
 
-        data_list.append(data)
+        any_data = True
+        event_output_dir.mkdir(parents=True, exist_ok=True)
+        plot_polar_cap_temperature(data_list, event_output_dir, event_ssw_date)
 
-        # Detect warming events per channel
-        results[label] = {}
-        for ch, ch_data in data["channels"].items():
-            pred_event = detect_warming_event(ch_data["predictions"], data["datetimes"])
-            tgt_event = detect_warming_event(ch_data["targets"], data["datetimes"])
-
-            _logger.info(
-                "%s  %s  pred=%s  tgt=%s",
-                label,
-                ch,
-                pred_event,
-                tgt_event,
-            )
-            results[label][ch] = {
-                "prediction": pred_event,
-                "target": tgt_event,
-            }
-
-    if not data_list:
+    if not any_data:
         print("No data extracted — check data-dir and validations config.")
         return
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    plot_polar_cap_temperature(data_list, args.output_dir, args.ssw_date)
-
-    # Save warming-event summary
+    # Save warming-event summary (keyed by event when there is more than one)
+    results_out: Any = results[next(iter(results))] if single_event and results else results
     json_path = args.output_dir / "polar_cap_temperature_results.json"
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     with open(json_path, "w") as fh:
-        json.dump(results, fh, indent=2, default=str)
+        json.dump(results_out, fh, indent=2, default=str)
     _logger.info("Saved %s", json_path)
 
     print("Analysis complete.")

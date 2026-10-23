@@ -42,7 +42,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import TwoSlopeNorm
-from weathergen.stratosphere.config import load_validations_config
+from weathergen.stratosphere.config import (
+    event_reference_date,
+    group_validations_by_event,
+    load_validations_config,
+)
 from weathergen.stratosphere.io import (
     convert_times_to_datetime,
     find_latitude_indices,
@@ -53,12 +57,11 @@ from weathergen.stratosphere.io import (
     get_forecast_steps,
     load_step,
     open_validation,
+    zarr_store_path,
 )
 from weathergen.stratosphere.levels import build_level_map
 
 _logger = logging.getLogger(__name__)
-
-_ZARR_FNAME = "validation_chkpt00000_rank0000.zip"
 
 # Default SSW reference date (Feb 2018 event)
 SSW_DATE = datetime(2018, 2, 12)
@@ -775,6 +778,12 @@ def main(argv: list[str] | None = None) -> None:
         "defaults to the per-experiment initial-period mean).",
     )
     parser.add_argument(
+        "--reference-rank",
+        type=int,
+        default=0,
+        help="SLURM rank whose store holds --reference-id's sample (default: 0).",
+    )
+    parser.add_argument(
         "--skip-wind",
         action="store_true",
         help="Skip zonal wind profiles.",
@@ -791,30 +800,56 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to climatology zarr for DOY+hour anomaly computation. "
              "When omitted, falls back to the initial-period mean.",
     )
+    parser.add_argument(
+        "--ssw-date",
+        type=lambda s: datetime.strptime(s, "%Y-%m-%d"),
+        default=SSW_DATE,
+        help="SSW onset date for reference line (YYYY-MM-DD).  [default: 2018-02-12]",
+    )
 
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
 
-    # Resolve run specs
+    # Resolve run specs, grouped by event so a config bundling several
+    # real-world SSW events produces one set of plots per event instead of
+    # one unreadable combined plot.
     if args.validations_config:
         cfg = load_validations_config(args.validations_config)
-        run_specs = [
-            {"id": v["id"], "label": label, "sample": v.get("sample", args.sample)}
-            for label, v in cfg.items()
-        ]
+        events = group_validations_by_event(cfg)
+        event_groups: dict[str, tuple[list[dict[str, Any]], datetime]] = {
+            event_name: (
+                [
+                    {
+                        "id": v["id"],
+                        "label": label,
+                        "sample": v.get("sample", args.sample),
+                        "rank": v.get("rank", 0),
+                    }
+                    for label, v in event_cfg.items()
+                ],
+                event_reference_date(event_cfg, args.ssw_date),
+            )
+            for event_name, event_cfg in events.items()
+        }
     else:
-        run_specs = [
-            {"id": rid, "label": rid, "sample": args.sample} for rid in args.run_ids
-        ]
+        event_groups = {
+            "default": (
+                [
+                    {"id": rid, "label": rid, "sample": args.sample, "rank": 0}
+                    for rid in args.run_ids
+                ],
+                args.ssw_date,
+            )
+        }
 
     # Optional reference baseline
     wind_reference: dict[str, Any] | None = None
     temp_reference: dict[str, Any] | None = None
 
     if args.reference_id:
-        ref_zarr = args.data_dir / args.reference_id / _ZARR_FNAME
+        ref_zarr = zarr_store_path(args.data_dir, args.reference_id, args.reference_rank)
         if ref_zarr.exists():
             _logger.info("Extracting anomaly reference from %s…", args.reference_id)
             if not args.skip_wind:
@@ -840,43 +875,51 @@ def main(argv: list[str] | None = None) -> None:
                 "Reference zarr not found: %s — using per-experiment baseline", ref_zarr
             )
 
-    # Extract profiles for all experiments
-    wind_data: list[dict[str, Any]] = []
-    temp_data: list[dict[str, Any]] = []
+    # Extract profiles for all experiments, grouped by event
+    single_event = len(event_groups) == 1
+    for event_name, (run_specs, event_ssw_date) in event_groups.items():
+        event_output_dir = (
+            args.output_dir if single_event else args.output_dir / event_name
+        )
+        wind_data: list[dict[str, Any]] = []
+        temp_data: list[dict[str, Any]] = []
 
-    for spec in run_specs:
-        zarr_path = args.data_dir / spec["id"] / _ZARR_FNAME
-        if not zarr_path.exists():
-            _logger.warning("zarr not found, skipping: %s", zarr_path)
-            continue
-        if not args.skip_wind:
-            d = extract_vertical_profile(
-                zarr_path, spec["label"], args.latitude, spec["sample"]
-            )
-            if d is not None:
-                wind_data.append(d)
-        if not args.skip_temperature:
-            d = extract_temperature_vertical_profile(
-                zarr_path, spec["label"], args.min_latitude, spec["sample"]
-            )
-            if d is not None:
-                temp_data.append(d)
+        for spec in run_specs:
+            zarr_path = zarr_store_path(args.data_dir, spec["id"], spec["rank"])
+            if not zarr_path.exists():
+                _logger.warning("zarr not found, skipping: %s", zarr_path)
+                continue
+            if not args.skip_wind:
+                d = extract_vertical_profile(
+                    zarr_path, spec["label"], args.latitude, spec["sample"]
+                )
+                if d is not None:
+                    wind_data.append(d)
+            if not args.skip_temperature:
+                d = extract_temperature_vertical_profile(
+                    zarr_path, spec["label"], args.min_latitude, spec["sample"]
+                )
+                if d is not None:
+                    temp_data.append(d)
 
-    # Generate plots
-    if wind_data:
-        plot_vertical_structure(wind_data, args.output_dir, wind_reference,
-                                climatology_path=args.climatology)
-        if len(wind_data) > 1:
-            plot_downward_propagation(wind_data, args.output_dir, wind_reference,
-                                      climatology_path=args.climatology)
-    elif not args.skip_wind:
-        _logger.warning("No wind data extracted.")
+        # Generate plots
+        if wind_data:
+            plot_vertical_structure(wind_data, event_output_dir, wind_reference,
+                                    ssw_date=event_ssw_date,
+                                    climatology_path=args.climatology)
+            if len(wind_data) > 1:
+                plot_downward_propagation(wind_data, event_output_dir, wind_reference,
+                                          ssw_date=event_ssw_date,
+                                          climatology_path=args.climatology)
+        elif not args.skip_wind:
+            _logger.warning("[%s] No wind data extracted.", event_name)
 
-    if temp_data:
-        plot_temperature_vertical_structure(temp_data, args.output_dir, temp_reference,
-                                            climatology_path=args.climatology)
-    elif not args.skip_temperature:
-        _logger.warning("No temperature data extracted.")
+        if temp_data:
+            plot_temperature_vertical_structure(temp_data, event_output_dir, temp_reference,
+                                                ssw_date=event_ssw_date,
+                                                climatology_path=args.climatology)
+        elif not args.skip_temperature:
+            _logger.warning("[%s] No temperature data extracted.", event_name)
 
     _logger.info("Done.")
 

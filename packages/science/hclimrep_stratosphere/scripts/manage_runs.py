@@ -22,7 +22,8 @@ Usage:
   python3 manage_runs.py check [--event E] [--results-dir DIR]
   python3 manage_runs.py export-config --event E [--output PATH]
   python3 manage_runs.py upsert --event E --model M --lead L --run-id ID \\
-      --model-id ID --model-label LABEL --init-date DATE --fsteps N [--status S]
+      --model-id ID --model-label LABEL --init-date DATE --fsteps N \\
+      [--rank R] [--sample S] [--status S]
   python3 manage_runs.py exists --event E --model M --lead L
 """
 
@@ -86,7 +87,9 @@ def cmd_list(args: argparse.Namespace) -> None:
             f"model_id={entry.get('model_id', ''):12s} "
             f"status={entry.get('status', ''):10s} "
             f"init_date={entry.get('init_date', '')} "
-            f"fsteps={entry.get('fsteps', '')}"
+            f"fsteps={entry.get('fsteps', '')} "
+            f"rank={entry.get('rank', 0)} "
+            f"sample={entry.get('sample', 0)}"
         )
         n += 1
     print(f"\n{n} entries.")
@@ -140,7 +143,8 @@ def cmd_export_config(args: argparse.Namespace) -> None:
             label = f"{model}_{lead}"
             validations[label] = {
                 "id": run_id,
-                "sample": 0,
+                "sample": entry.get("sample", 0),
+                "rank": entry.get("rank", 0),
                 "group": model,
                 "lead_days": days,
                 "color": _palette_color(days, lead_max),
@@ -174,6 +178,8 @@ def cmd_upsert(args: argparse.Namespace) -> None:
         init_date=args.init_date,
         fsteps=args.fsteps,
         submitted_at=submitted_at,
+        rank=args.rank,
+        sample=args.sample,
         status=args.status,
     )
     save_manifest(manifest, args.manifest)
@@ -218,6 +224,14 @@ def main(argv: list[str] | None = None) -> None:
     p_upsert.add_argument("--model-label", required=True)
     p_upsert.add_argument("--init-date", required=True)
     p_upsert.add_argument("--fsteps", type=int, required=True)
+    p_upsert.add_argument(
+        "--rank", type=int, default=0,
+        help="SLURM rank whose zarr store holds this lead's sample (default: 0).",
+    )
+    p_upsert.add_argument(
+        "--sample", type=int, default=0,
+        help="Local sample index within that rank's store (default: 0).",
+    )
     p_upsert.add_argument("--status", default="submitted")
     p_upsert.add_argument("--submitted-at", default=None)
     p_upsert.set_defaults(func=cmd_upsert)
