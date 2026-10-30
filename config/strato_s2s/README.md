@@ -33,22 +33,30 @@ The memory set must stay identical in `streams/memory/s2spredictors.yml` and the
 
 ## Loss weighting
 
-- `location_weight: auto` on ERA5pl and S2Spredictors resolves to the O96 cos-latitude/points-per-ring weighting
-  (grid detected from the number of grid points). It is not set on TEM, see below.
+- `location_weight: auto` on ERA5pl, S2Spredictors and TEM resolves to the O96 cos-latitude/points-per-ring
+  weighting (grid detected from the number of grid points; `tem_reader.py` now exposes `n_latitudes`).
 - Channel weights are uniform (1.0). The stream loss is a *mean over its target channels*, so the number of channels
   changes a stream's per-channel weight. S2Spredictors has 4 targets in the memory arm and 40 in the strat arms, so
   the memory arm uses `loss_weight: 0.1` (4/40) to keep sst/sd/ci/ttr and ERA5pl weighted identically across arms.
-  ERA5pl is 1.0 and TEM 0.1 in all arms.
+  ERA5pl is 1.0 in all arms; TEM 0.25 (10 channels vs 40).
 - Validation losses are unweighted by construction and are not comparable across arms; compare verification scores.
+
+## ERA5pl channels and geoinfo
+
+- Dropped vs the old streams: surface `z` (static, now geoinfo), `tcw`, `tp`, `cp`, `q_50`, `q_100`.
+- `skt` is target only (redundant as input next to `2t`/`sst`).
+- Geoinfo: ERA5pl keeps orography/land-sea and all time encodings; S2Spredictors only `slt` (soil type for the soil
+  fields); TEM none.
+
+## TEM channels
+
+Levels are L137 full levels (hPa): 61=104, 55=75, 48=50, 40=28, 29=9.8, 19=2.5. The old 88 (367 hPa) was tropospheric.
+Source = target: `ep_flux_div` at all six levels, plus `F_p` and `vtheta_prime` at 61 and 48 (vertical wave-activity
+flux and eddy heat flux, the SSW precursors). Loss weight 0.25.
 
 ## Open decisions
 
-- **TEM channels** (`streams/strat_tem/tem.yml`) are still the provisional `ep_flux_div` at levels 29/55/88, loss weight
-  0.1. Candidates: stratospheric-only levels, adding `vtheta_prime` near the tropopause. Needs the level to hPa table.
-- **TEM location weighting:** the TEM reader does not expose `n_latitudes`, so `location_weight: auto` would silently
-  fall back to uniform. The TEM values are zonal means broadcast over the same O96 points, so uniform weighting
-  over-weights low latitudes. Fix: set `self.n_latitudes = len(self.latitudes)` in `tem_reader.py`, then add
-  `location_weight : auto` to `tem.yml`.
+- TEM selection is a first proposal; trim if it is too many channels.
 - Source-only memory channels (target list is a strict subset of the source list) have not been run yet; do a short
   dry run before launching the 128-epoch jobs.
 - Inference streams and eval configs for these arms do not exist yet. Use identical channel lists across arms for the

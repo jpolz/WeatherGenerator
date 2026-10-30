@@ -16,9 +16,19 @@ TEM :
   filenames : ['/e/scratch/weatherai/shared_work/assets/tem/aifs-ea-an-oper-0001-mars-o96-1979-2022-6h-v7-ml137_ep_flux_div.zarr']
   statistics : '/e/scratch/weatherai/shared_work/assets/tem/aifs-ea-an-oper-0001-mars-o96-1979-2022-6h-v7-ml137_ep_flux_div_stats.json'
   stream_id : 2
-  source : ['ep_flux_div_29', 'ep_flux_div_55', 'ep_flux_div_88']
-  target : ['ep_flux_div_29', 'ep_flux_div_55', 'ep_flux_div_88']
-  loss_weight : 0.1
+  # Model levels (L137 full-level hPa): 61=104, 55=75, 48=50, 40=28, 29=9.8, 19=2.5
+  # ep_flux_div: wave forcing of the zonal flow; F_p and vtheta_prime at 104/50 hPa:
+  # vertical wave-activity flux / eddy heat flux, the SSW precursor signal.
+  source : [
+    'ep_flux_div_61', 'ep_flux_div_55', 'ep_flux_div_48', 'ep_flux_div_40', 'ep_flux_div_29', 'ep_flux_div_19',
+    'F_p_61', 'F_p_48', 'vtheta_prime_61', 'vtheta_prime_48',
+    ]
+  target : [
+    'ep_flux_div_61', 'ep_flux_div_55', 'ep_flux_div_48', 'ep_flux_div_40', 'ep_flux_div_29', 'ep_flux_div_19',
+    'F_p_61', 'F_p_48', 'vtheta_prime_61', 'vtheta_prime_48',
+    ]
+  loss_weight : 0.25
+  location_weight : auto
   token_size : 8
   tokenize_spacetime : True
   frequency : 6h
@@ -39,6 +49,13 @@ TEM :
     ens_size : 1
     num_layers : 1
   channel_weights :
-    ep_flux_div_29: 1.0
+    ep_flux_div_61: 1.0
     ep_flux_div_55: 1.0
-    ep_flux_div_88: 1.0
+    ep_flux_div_48: 1.0
+    ep_flux_div_40: 1.0
+    ep_flux_div_29: 1.0
+    ep_flux_div_19: 1.0
+    F_p_61: 1.0
+    F_p_48: 1.0
+    vtheta_prime_61: 1.0
+    vtheta_prime_48: 1.0

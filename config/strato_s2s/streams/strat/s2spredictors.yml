@@ -38,7 +38,7 @@ S2Spredictors :
     'w_1', 'w_2', 'w_5', 'w_10', 'w_30', 'w_70',
     'z_1', 'z_2', 'z_5', 'z_10', 'z_30', 'z_70',
     ]
-  geoinfo_channels : ['slt', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
+  geoinfo_channels : ['slt']
   loss_weight : 1.
   location_weight : auto
   masking_rate : 0.6

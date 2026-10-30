@@ -16,10 +16,11 @@ ERA5pl :
   stream_id : 0
   source : [
     # surface
-    '10u', '10v', '2t', '2d', 'z', 'msl', 'sp', 'skt', 'tcw', 'tp', 'cp',
+    '10u', '10v', '2t', '2d', 'msl', 'sp',
     # pressure levels (50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000 hPa)
-    'u_50',  'v_50',  'q_50',  't_50',  'z_50',
-    'u_100', 'v_100', 'q_100', 't_100', 'z_100',
+    # no q at 50/100 hPa (stratospheric humidity is uninformative here)
+    'u_50',  'v_50',  't_50',  'z_50',
+    'u_100', 'v_100', 't_100', 'z_100',
     'u_150', 'v_150', 'q_150', 't_150', 'z_150',
     'u_200', 'v_200', 'q_200', 't_200', 'z_200',
     'u_250', 'v_250', 'q_250', 't_250', 'z_250',
@@ -33,9 +34,9 @@ ERA5pl :
     'u_1000','v_1000','q_1000','t_1000','z_1000',
     ]
   target : [
-    '10u', '10v', '2t', '2d', 'z', 'msl', 'sp', 'skt', 'tcw', 'tp', 'cp',
-    'u_50',  'v_50',  'q_50',  't_50',  'z_50',
-    'u_100', 'v_100', 'q_100', 't_100', 'z_100',
+    '10u', '10v', '2t', '2d', 'msl', 'sp', 'skt',
+    'u_50',  'v_50',  't_50',  'z_50',
+    'u_100', 'v_100', 't_100', 'z_100',
     'u_150', 'v_150', 'q_150', 't_150', 'z_150',
     'u_200', 'v_200', 'q_200', 't_200', 'z_200',
     'u_250', 'v_250', 'q_250', 't_250', 'z_250',
@@ -48,7 +49,7 @@ ERA5pl :
     'u_925', 'v_925', 'q_925', 't_925', 'z_925',
     'u_1000','v_1000','q_1000','t_1000','z_1000',
     ]
-  geoinfo_channels : ['lsm', 'slor', 'sdor', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
+  geoinfo_channels : ['z', 'lsm', 'slor', 'sdor', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
   loss_weight : 1.
   location_weight : auto
   masking_rate : 0.6
@@ -78,13 +79,9 @@ ERA5pl :
     10v : 1.0
     2t  : 1.0
     2d  : 1.0
-    z   : 1.0
     msl : 1.0
     sp  : 1.0
     skt : 1.0
-    tcw : 1.0
-    tp  : 1.0
-    cp  : 1.0
     # --- u ---
     u_50  : 1.0
     u_100 : 1.0
@@ -128,8 +125,6 @@ ERA5pl :
     t_925 : 1.0
     t_1000: 1.0
     # --- q ---
-    q_50  : 1.0
-    q_100 : 1.0
     q_150 : 1.0
     q_200 : 1.0
     q_250 : 1.0

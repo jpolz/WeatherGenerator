@@ -95,6 +95,7 @@ class DataReaderTEM(DataReaderTimestep):
         self.latitudes = np.clip(ds.coords["latitude"].values.astype(np.float32), -90.0, 90.0)
         self.longitudes = ((ds.coords["longitude"].values.astype(np.float32) + 180.0) % 360.0 - 180.0)
         self.n_points = len(self.latitudes)
+        self.n_latitudes = self.n_points
 
         # ---- Channel selection -----------------------------------------------
         source_filter = self._stream_info.get("source")
