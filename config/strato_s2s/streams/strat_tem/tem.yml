@@ -1,0 +1,44 @@
+# (C) Copyright 2025 WeatherGenerator contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation
+# nor does it submit to any jurisdiction.
+
+# TEM EP flux stream — O96 unstructured grid.
+# PROVISIONAL: channel selection is still under review (see README "Open decisions").
+# Currently ep_flux_div at 3 levels (29 ≈ 10 hPa, 55 ≈ 77 hPa, 88 ≈ 350 hPa).
+
+TEM :
+  type : tem
+  filenames : ['/e/scratch/weatherai/shared_work/assets/tem/aifs-ea-an-oper-0001-mars-o96-1979-2022-6h-v7-ml137_ep_flux_div.zarr']
+  statistics : '/e/scratch/weatherai/shared_work/assets/tem/aifs-ea-an-oper-0001-mars-o96-1979-2022-6h-v7-ml137_ep_flux_div_stats.json'
+  stream_id : 2
+  source : ['ep_flux_div_29', 'ep_flux_div_55', 'ep_flux_div_88']
+  target : ['ep_flux_div_29', 'ep_flux_div_55', 'ep_flux_div_88']
+  loss_weight : 0.1
+  token_size : 8
+  tokenize_spacetime : True
+  frequency : 6h
+  max_num_targets: 100
+  embed :
+    net : transformer
+    num_tokens : 1
+    num_heads : 8
+    dim_embed : 256
+    num_blocks : 2
+  embed_target_coords :
+    net : linear
+    dim_embed : 256
+  target_readout :
+    num_layers : 2
+    num_heads : 4
+  pred_head :
+    ens_size : 1
+    num_layers : 1
+  channel_weights :
+    ep_flux_div_29: 1.0
+    ep_flux_div_55: 1.0
+    ep_flux_div_88: 1.0

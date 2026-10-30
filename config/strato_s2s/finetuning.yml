@@ -1,0 +1,30 @@
+# Finetuning override — 8-step rollout, frozen backbone, shared by all arms.
+# Apply on top of config_base.yml + arm_<name>.yml + split_control.yml.
+# The .*TEM.* pattern only matches in the TEM arm and is a no-op elsewhere.
+
+freeze_modules: ".*global.*|.*local.*|.*adapter.*|.*q_cells.*|.*latent.*|.*ERA5pl.*|.*S2Spredictors.*|.*TEM.*"
+
+# reset istep so mini_epoch_base is recomputed relative to this finetuning stage
+general:
+  istep: 0
+
+training_config:
+  num_mini_epochs: 32
+
+  learning_rate_scheduling:
+    lr_start: 1e-6
+    lr_max: 5e-5
+    lr_final_decay: 2e-6
+    lr_final: 0.0
+    num_steps_warmup: 256
+    num_steps_cooldown: 512
+    policy_warmup: "cosine"
+    policy_decay: "cosine"
+    policy_cooldown: "linear"
+    parallel_scaling_policy: "sqrt"
+
+  forecast:
+    time_step: 06:00:00
+    offset: 1
+    num_steps: 8
+    policy: fixed

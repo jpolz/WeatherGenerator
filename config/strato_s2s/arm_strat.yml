@@ -1,0 +1,2 @@
+# Arm 2 — full stratosphere: ERA5pl + S2S memory fields + stratospheric levels (1-70 hPa).
+streams_directory: "./config/strato_s2s/streams/strat/"

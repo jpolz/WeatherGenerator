@@ -1,0 +1,2 @@
+# Arm 3 — full stratosphere + TEM diagnostic stream.
+streams_directory: "./config/strato_s2s/streams/strat_tem/"

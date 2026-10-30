@@ -1,0 +1,9 @@
+# Control split — train on the full 1979–2012 pool. Holdout 2013–2022 is never trained on;
+# the 2021–2022 validation years are only used for the validation loss.
+training_config:
+  start_date: 1979-01-01T00:00
+  end_date:   2012-12-31T00:00
+
+validation_config:
+  start_date: 2021-01-01T00:00
+  end_date:   2022-12-31T00:00

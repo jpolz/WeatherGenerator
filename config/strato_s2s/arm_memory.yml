@@ -1,0 +1,2 @@
+# Arm 1 — memory-only baseline: ERA5pl + S2S memory fields, NO stratosphere.
+streams_directory: "./config/strato_s2s/streams/memory/"

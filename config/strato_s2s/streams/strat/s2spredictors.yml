@@ -1,0 +1,105 @@
+# (C) Copyright 2025 WeatherGenerator contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation
+# nor does it submit to any jurisdiction.
+#
+# S2S memory fields + stratosphere stream — arms "strat" and "strat_tem".
+# The memory-field set is IDENTICAL to streams/memory/s2spredictors.yml (keep in sync),
+# plus the stratospheric pressure levels (1, 2, 5, 10, 30, 70 hPa) as source and target.
+# Constant/time-encoding fields are routed through geoinfo_channels.
+
+S2Spredictors :
+  type : anemoi
+  filenames : ['aifs-ea-an-oper-0001-mars-o96-1979-2023-6h-v2-s2s-predictors.zarr']
+  stream_id : 1
+  source : [
+    # memory fields (source + target)
+    'sst', 'sd', 'ci', 'ttr',
+    # memory fields (source only)
+    'stl1', 'stl2', 'stl3', 'swvl1', 'swvl2', 'swvl3', 'ssrd', 'strd',
+    # stratospheric pressure levels (1, 2, 5, 10, 30, 70 hPa)
+    'q_1', 'q_2', 'q_5', 'q_10', 'q_30', 'q_70',
+    't_1', 't_2', 't_5', 't_10', 't_30', 't_70',
+    'u_1', 'u_2', 'u_5', 'u_10', 'u_30', 'u_70',
+    'v_1', 'v_2', 'v_5', 'v_10', 'v_30', 'v_70',
+    'w_1', 'w_2', 'w_5', 'w_10', 'w_30', 'w_70',
+    'z_1', 'z_2', 'z_5', 'z_10', 'z_30', 'z_70',
+    ]
+  target : [
+    'sst', 'sd', 'ci', 'ttr',
+    'q_1', 'q_2', 'q_5', 'q_10', 'q_30', 'q_70',
+    't_1', 't_2', 't_5', 't_10', 't_30', 't_70',
+    'u_1', 'u_2', 'u_5', 'u_10', 'u_30', 'u_70',
+    'v_1', 'v_2', 'v_5', 'v_10', 'v_30', 'v_70',
+    'w_1', 'w_2', 'w_5', 'w_10', 'w_30', 'w_70',
+    'z_1', 'z_2', 'z_5', 'z_10', 'z_30', 'z_70',
+    ]
+  geoinfo_channels : ['slt', 'insolation', 'cos_local_time', 'sin_local_time', 'cos_julian_day', 'sin_julian_day']
+  loss_weight : 1.
+  location_weight : auto
+  masking_rate : 0.6
+  masking_rate_none : 0.05
+  token_size : 8
+  tokenize_spacetime : True
+  frequency : 6h
+  max_num_targets: 20000
+  embed :
+    net : transformer
+    num_tokens : 1
+    num_heads : 8
+    dim_embed : 256
+    num_blocks : 2
+  embed_target_coords :
+    net : linear
+    dim_embed : 256
+  target_readout :
+    num_layers : 2
+    num_heads : 4
+  pred_head :
+    ens_size : 1
+    num_layers : 1
+  channel_weights :
+    sst : 1.0
+    sd  : 1.0
+    ci  : 1.0
+    ttr : 1.0
+    q_1  : 1.0
+    q_2  : 1.0
+    q_5  : 1.0
+    q_10 : 1.0
+    q_30 : 1.0
+    q_70 : 1.0
+    t_1  : 1.0
+    t_2  : 1.0
+    t_5  : 1.0
+    t_10 : 1.0
+    t_30 : 1.0
+    t_70 : 1.0
+    u_1  : 1.0
+    u_2  : 1.0
+    u_5  : 1.0
+    u_10 : 1.0
+    u_30 : 1.0
+    u_70 : 1.0
+    v_1  : 1.0
+    v_2  : 1.0
+    v_5  : 1.0
+    v_10 : 1.0
+    v_30 : 1.0
+    v_70 : 1.0
+    w_1  : 1.0
+    w_2  : 1.0
+    w_5  : 1.0
+    w_10 : 1.0
+    w_30 : 1.0
+    w_70 : 1.0
+    z_1  : 1.0
+    z_2  : 1.0
+    z_5  : 1.0
+    z_10 : 1.0
+    z_30 : 1.0
+    z_70 : 1.0
