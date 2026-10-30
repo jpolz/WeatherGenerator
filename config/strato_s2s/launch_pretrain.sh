@@ -18,7 +18,7 @@ OUT_CSV="${CFG_DIR}/run_ids.csv"
 ALL_ARMS=(memory strat strat_tem)
 ARMS=("${@:-${ALL_ARMS[@]}}")
 
-SLURM_ARGS=(--nodes=2 --ntasks=8 --gpus-per-node=4 --account=hclimrep -t 12:00:00 --chain-jobs=4)
+SLURM_ARGS=(--nodes=2 --ntasks=8 --gpus-per-node=4 --account=hclimrep -t 12:00:00 --chain-jobs=4 --no-register)
 
 [[ -f "${OUT_CSV}" ]] || echo "arm,run_id,slurm_job_id,timestamp" > "${OUT_CSV}"
 
