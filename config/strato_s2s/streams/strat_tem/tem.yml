@@ -7,9 +7,8 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-# TEM EP flux stream — O96 unstructured grid.
+# TEM EP flux stream — zonal means in 2.5° latitude bins, broadcast onto the O96 grid.
 # PROVISIONAL: channel selection is still under review (see README "Open decisions").
-# Currently ep_flux_div at 3 levels (29 ≈ 10 hPa, 55 ≈ 77 hPa, 88 ≈ 350 hPa).
 
 TEM :
   type : tem
@@ -27,12 +26,16 @@ TEM :
     'ep_flux_div_61', 'ep_flux_div_55', 'ep_flux_div_48', 'ep_flux_div_40', 'ep_flux_div_29', 'ep_flux_div_19',
     'F_p_61', 'F_p_48', 'vtheta_prime_61', 'vtheta_prime_48',
     ]
-  loss_weight : 0.25
+  # TEM MSE (~0.2) sits far above ERA5pl/S2S (~0.03), so the stream weight is kept small to leave
+  # the ERA5pl share of the training loss close to the strat arm (0.25 made TEM the largest term).
+  loss_weight : 0.05
   location_weight : auto
   token_size : 8
   tokenize_spacetime : True
   frequency : 6h
-  max_num_targets: 100
+  # Same as the other streams. 100 targets covered only ~48 of the 72 latitude bins per sample and
+  # the polar bins in <20% of the samples (O96 polar rings have 20 points vs 384 at the equator).
+  max_num_targets: 20000
   embed :
     net : transformer
     num_tokens : 1

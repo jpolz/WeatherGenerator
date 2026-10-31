@@ -8,8 +8,10 @@ Self-contained: copy this folder to `config/` of another checkout; paths are rel
 
 | Arm | Config | Streams (`streams/<dir>/`) | Purpose |
 |---|---|---|---|
+| era5pl | `arm_era5pl.yml` | `era5pl/`: ERA5pl only | single-stream reference (cost/benefit of any extra stream) |
 | memory | `arm_memory.yml` | `memory/`: ERA5pl + S2S memory fields | baseline without stratosphere |
-| strat | `arm_strat.yml` | `strat/`: + stratosphere (q/t/u/v/w/z @ 1, 2, 5, 10, 30, 70 hPa) | benefit of the stratosphere (strat vs memory) |
+| strat | `arm_strat.yml` | `strat/`: + stratosphere (t/u/v/z @ 1, 2, 5, 10, 30, 70 hPa) | benefit of the stratosphere (strat vs memory) |
+| strat_w01 | `arm_strat_w01.yml` | `strat_w01/`: as strat, S2S `loss_weight: 0.1` | strat with the memory arm's ERA5pl loss share |
 | strat_tem | `arm_strat_tem.yml` | `strat_tem/`: strat + TEM stream | benefit of TEM (strat_tem vs strat) |
 
 Stack the configs in this order (later files override earlier ones):
@@ -36,9 +38,15 @@ The memory set must stay identical in `streams/memory/s2spredictors.yml` and the
 - `location_weight: auto` on ERA5pl, S2Spredictors and TEM resolves to the O96 cos-latitude/points-per-ring
   weighting (grid detected from the number of grid points; `tem_reader.py` now exposes `n_latitudes`).
 - Channel weights are uniform (1.0). The stream loss is a *mean over its target channels*, so the number of channels
-  changes a stream's per-channel weight. S2Spredictors has 4 targets in the memory arm and 40 in the strat arms, so
-  the memory arm uses `loss_weight: 0.1` (4/40) to keep sst/sd/ci/ttr and ERA5pl weighted identically across arms.
-  ERA5pl is 1.0 in all arms; TEM 0.25 (10 channels vs 40).
+  changes a stream's per-channel weight. S2Spredictors has 4 targets in the memory arm and 28 in the strat arms, so
+  the memory arm uses `loss_weight: 0.1` (≈4/28; set when the strat stream still had 40 targets, i.e. the memory
+  channels are weighted slightly lower than in the strat arms). ERA5pl is 1.0 in all arms.
+- TEM: `loss_weight: 0.05`. The TEM MSE (~0.2) is 5–8× the ERA5pl/S2S means; with the previous 0.25 TEM was the
+  largest term and the ERA5pl share of the training loss dropped to ~0.3 (memory ~0.95, strat ~0.55).
+- The total loss is `Σ_streams loss_weight · mean_channels(mse) / n_streams`, so with AdamW + grad clipping a
+  stream's *share* of the loss sets how much of each update it gets. The arms therefore differ in the effective
+  number of ERA5pl updates (memory ≈ 1.75× strat at equal samples); keep this in mind when comparing at equal
+  sample counts.
 - Validation losses are unweighted by construction and are not comparable across arms; compare verification scores.
 
 ## ERA5pl channels and geoinfo
@@ -52,7 +60,11 @@ The memory set must stay identical in `streams/memory/s2spredictors.yml` and the
 
 Levels are L137 full levels (hPa): 61=104, 55=75, 48=50, 40=28, 29=9.8, 19=2.5. The old 88 (367 hPa) was tropospheric.
 Source = target: `ep_flux_div` at all six levels, plus `F_p` and `vtheta_prime` at 61 and 48 (vertical wave-activity
-flux and eddy heat flux, the SSW precursors). Loss weight 0.25.
+flux and eddy heat flux, the SSW precursors). Loss weight 0.05.
+
+The data are zonal means in 2.5° latitude bins (72 bins) broadcast onto the 40320 O96 points. `max_num_targets` is
+20000 like the other streams: a random subset of 100 points covered only ~48 bins per sample and the polar bins
+(where the SSW signal is) in <20% of the samples, because the O96 polar rings have 20 points vs 384 at the equator.
 
 ## Open decisions
 

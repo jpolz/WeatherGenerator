@@ -15,7 +15,7 @@ set -euo pipefail
 LAUNCH=../WeatherGenerator-private/hpc/launch-slurm.py
 CFG_DIR=config/strato_s2s
 OUT_CSV="${CFG_DIR}/run_ids.csv"
-ALL_ARMS=(era5pl memory strat strat_tem)
+ALL_ARMS=(era5pl memory strat strat_w01 strat_tem)
 DEFAULT_ARMS=(memory strat strat_tem)
 # Optional extra overlays (space separated, e.g. EXTRA_CFG="config/strato_s2s/capacity_large.yml"), recorded as TAG
 EXTRA_CFG="${EXTRA_CFG:-}"

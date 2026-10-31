@@ -1,0 +1,3 @@
+# Arm 2b — full stratosphere like arm_strat.yml, but S2Spredictors loss_weight 0.1 (as in the memory arm),
+# so that ERA5pl keeps the same share of the training loss as in the memory arm.
+streams_directory: "./config/strato_s2s/streams/strat_w01/"
