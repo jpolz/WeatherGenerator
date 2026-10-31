@@ -15,8 +15,12 @@ set -euo pipefail
 LAUNCH=../WeatherGenerator-private/hpc/launch-slurm.py
 CFG_DIR=config/strato_s2s
 OUT_CSV="${CFG_DIR}/run_ids.csv"
-ALL_ARMS=(memory strat strat_tem)
-ARMS=("${@:-${ALL_ARMS[@]}}")
+ALL_ARMS=(era5pl memory strat strat_tem)
+DEFAULT_ARMS=(memory strat strat_tem)
+# Optional extra overlays (space separated, e.g. EXTRA_CFG="config/strato_s2s/capacity_large.yml"), recorded as TAG
+EXTRA_CFG="${EXTRA_CFG:-}"
+TAG="${TAG:-}"
+ARMS=("${@:-${DEFAULT_ARMS[@]}}")
 
 SLURM_ARGS=(--nodes=2 --ntasks=8 --gpus-per-node=4 --account=hclimrep -t 12:00:00 --chain-jobs=4 --no-register)
 
@@ -30,7 +34,7 @@ for ARM in "${ARMS[@]}"; do
     fi
 
     CMD=("${LAUNCH}" "${SLURM_ARGS[@]}"
-         --config "${CFG_DIR}/config_base.yml" "${ARM_CFG}" "${CFG_DIR}/split_control.yml")
+         --config "${CFG_DIR}/config_base.yml" "${ARM_CFG}" "${CFG_DIR}/split_control.yml" ${EXTRA_CFG})
 
     echo "=== Launching arm=${ARM} ==="
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -47,7 +51,7 @@ for ARM in "${ARMS[@]}"; do
         exit 1
     fi
 
-    echo "${ARM},${RUN_ID},${SLURM_JOB_ID},$(date -Iseconds)" >> "${OUT_CSV}"
+    echo "${ARM}${TAG:+_${TAG}},${RUN_ID},${SLURM_JOB_ID},$(date -Iseconds)" >> "${OUT_CSV}"
     echo "-> arm=${ARM} run_id=${RUN_ID} slurm_job_id=${SLURM_JOB_ID}"
     echo
 done

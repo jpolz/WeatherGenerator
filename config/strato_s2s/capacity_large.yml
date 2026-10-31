@@ -1,0 +1,5 @@
+# Optional overlay (append after the arm config): more depth in the global and forecast engines.
+# UNTESTED sizes; check that the job fits in memory and throughput is acceptable before a full run.
+ae_global_num_blocks: 8
+fe_num_blocks: 24
+fe_layer_norm_after_blocks: [7, 15]

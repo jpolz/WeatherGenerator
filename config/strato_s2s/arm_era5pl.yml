@@ -1,0 +1,2 @@
+# Arm 0 — ERA5pl only: reference for how much any extra stream costs/helps the tropospheric fit.
+streams_directory: "./config/strato_s2s/streams/era5pl/"
