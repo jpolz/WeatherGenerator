@@ -9,21 +9,36 @@ Polar Cap Temperature Analysis for SSW Event Prediction.
 
 Analyses area-weighted mean temperature poleward of 60°N to quantify
 stratospheric warming during SSW events.  Produces one time-series panel
-per available temperature level, comparing model predictions against ERA5
-targets across multiple experiments.
+per pressure level, comparing model predictions against ERA5 targets
+across multiple experiments.
+
+Multi-stream layout
+-------------------
+A forecast store may spread the atmospheric column over several streams
+(e.g. ``ERA5pl`` with 50–1000 hPa and ``S2Spredictors`` with 1–70 hPa, or a
+single legacy ``ERA5ml`` model-level stream).  Levels are therefore selected
+in hPa via :func:`weathergen.stratosphere.io.discover_column`, which merges
+all streams into one pressure axis; the stream and channel name of each
+level are resolved automatically.  Default levels: 2, 10, 30 and 50 hPa
+(falls back to every available level ≤ 100 hPa, e.g. only 50 hPa for the
+``memory`` arm).
 
 Usage::
 
     ssw-analyze polar-cap-temperature \\
         --validations-config config/evaluate/ssw_feb2018.yml \\
         --data-dir results \\
-        --output-dir plots/polar_cap_temperature
+        --output-dir plots/polar_cap_temperature \\
+        --levels 2 10 30 50
 
 Or as a module::
 
     python -m weathergen.stratosphere.scripts.analyze_polar_cap_temperature \\
         --validations-config config/evaluate/ssw_feb2018.yml \\
         --data-dir results
+
+``--channels t_19 t_29`` (explicit channel names) is still accepted as a
+legacy alias of ``--levels``.
 """
 
 from __future__ import annotations
@@ -37,33 +52,35 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+
 from weathergen.stratosphere.config import (
     event_reference_date,
     group_validations_by_event,
     load_validations_config,
 )
-from weathergen.stratosphere.diagnostics import detect_warming_event
+from weathergen.stratosphere.diagnostics import detect_warming_event, polar_cap_mean
 from weathergen.stratosphere.io import (
+    LevelRef,
     convert_times_to_datetime,
+    discover_column,
     find_polar_cap_indices,
-    get_area_weights,
-    get_channels,
     get_coords,
     get_forecast_steps,
-    get_stream,
+    load_levels,
     open_validation,
+    resolve_channel_arg,
     zarr_store_path,
 )
-from weathergen.stratosphere.levels import channel_pressure
+from weathergen.stratosphere.levels import format_pressure
 
 _logger = logging.getLogger(__name__)
 
-# Default model levels for polar-cap temperature (≈ 2.5, 10, 28, 50 hPa).
-# Override with --t-channels to use a different set.
-_DEFAULT_T_LEVELS = [19, 29, 40, 48]
+# Default pressure levels (hPa) for polar-cap temperature.
+# Override with --levels (hPa) or the legacy --channels (channel names).
+_DEFAULT_T_LEVELS_HPA = [2.0, 10.0, 30.0, 50.0]
 
-# Fallback for ERA5pl streams (only 50/500/850hPa exist)
-_T_CHANNELS_PL = ["t_50", "t_500"]
+# If none of the defaults exist, fall back to all levels at or above this pressure.
+_FALLBACK_P_BOTTOM_HPA = 100.0
 
 # Default SSW reference date
 SSW_DATE = datetime(2018, 2, 12)
@@ -71,9 +88,40 @@ SSW_DATE = datetime(2018, 2, 12)
 _COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628"]
 
 
+def level_key(pressure_hpa: float) -> str:
+    """Stable key / filename fragment for a level, e.g. ``'t_10hPa'``."""
+    return f"t_{pressure_hpa:g}hPa"
+
+
 # ---------------------------------------------------------------------------
 # Data extraction
 # ---------------------------------------------------------------------------
+
+
+def _resolve_levels(
+    zio: Any,
+    label: str,
+    sample: int,
+    channels: list[str] | None,
+    levels_hpa: list[float] | None,
+) -> list[LevelRef]:
+    """Resolve requested (or default) temperature levels to :class:`LevelRef` objects."""
+    if channels or levels_hpa:
+        return resolve_channel_arg(zio, "t", channels, levels_hpa, _DEFAULT_T_LEVELS_HPA, sample)
+
+    col = discover_column(zio, "t", sample)
+    refs = col.select(_DEFAULT_T_LEVELS_HPA)
+    if not refs:
+        refs = col.between(0.0, _FALLBACK_P_BOTTOM_HPA)
+        if refs:
+            _logger.warning(
+                "%s: none of the default levels %s hPa available; using all levels ≤ %g hPa: %s",
+                label,
+                _DEFAULT_T_LEVELS_HPA,
+                _FALLBACK_P_BOTTOM_HPA,
+                [r.pressure for r in refs],
+            )
+    return refs
 
 
 def extract_polar_cap_temperature(
@@ -81,14 +129,15 @@ def extract_polar_cap_temperature(
     label: str,
     min_latitude: float = 60.0,
     sample: int = 0,
-    t_channels_override: list[str] | None = None,
+    channels: list[str] | None = None,
+    levels_hpa: list[float] | None = None,
     color: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Extract area-weighted polar cap mean temperature poleward of *min_latitude*.
 
-    Searches for available temperature channels in the data stream and
-    returns a time series for each found channel.
+    Resolves the requested pressure levels across all streams of the store
+    and returns one (ensemble-mean) time series per level.
 
     Parameters
     ----------
@@ -100,78 +149,71 @@ def extract_polar_cap_temperature(
         Southern boundary of the polar cap (°N).  Default 60°N.
     sample:
         Ensemble/sample index to extract.
+    channels:
+        Legacy explicit channel names (e.g. ``["t_19", "t_29"]``).
+    levels_hpa:
+        Pressure levels in hPa; ``None`` → :data:`_DEFAULT_T_LEVELS_HPA`.
     color:
         Optional plot colour (from the validations config), carried through
         to the returned dict for :func:`plot_polar_cap_temperature`.
 
     Returns
     -------
-    Dict with keys ``label``, ``channels``, ``times``, ``datetimes``,
+    Dict with keys ``label``, ``levels`` (pressure → ``{"predictions",
+    "targets", "channel", "stream"}``), ``times``, ``datetimes``,
     ``min_latitude``, ``n_points``, ``color``; or ``None`` if no temperature
-    channels are available.
+    level is available.
     """
-    _logger.info(
-        "%s: extracting polar cap temperature (lat≥%.1f°N)…", label, min_latitude
-    )
+    _logger.info("%s: extracting polar cap temperature (lat≥%.1f°N)…", label, min_latitude)
 
     with open_validation(zarr_path) as zio:
-        stream_name = get_stream(zio)
-        steps = get_forecast_steps(zio, skip_source_step=True)
-        channels = get_channels(zio, stream_name, sample)
-        coords = get_coords(zio, stream_name, sample)
-
-        # Select candidate channels based on stream type
-        if t_channels_override is not None:
-            candidates = t_channels_override
-        elif stream_name == "ERA5ml":
-            candidates = [f"t_{lv}" for lv in _DEFAULT_T_LEVELS]
-        else:
-            candidates = _T_CHANNELS_PL
-
-        available_channels: dict[str, int] = {
-            ch: channels.index(ch) for ch in candidates if ch in channels
-        }
-
-        if not available_channels:
-            _logger.warning(
-                "%s: no stratospheric t channels found in %s.  Available t channels: %s",
-                label,
-                stream_name,
-                [c for c in channels if c.startswith("t_")],
-            )
+        refs = _resolve_levels(zio, label, sample, channels, levels_hpa)
+        if not refs:
+            _logger.warning("%s: no temperature levels found in streams %s", label, zio.streams)
             return None
 
-        _logger.info("%s: using channels %s", label, list(available_channels))
+        _logger.info(
+            "%s: using levels %s", label, [f"{r.label} ({r.stream}/{r.channel})" for r in refs]
+        )
 
-        # Spatial weights for polar cap
-        polar_indices = find_polar_cap_indices(coords, min_latitude)
-        weights = get_area_weights(coords, polar_indices)
+        steps = get_forecast_steps(zio, skip_source_step=True)
 
-        # Accumulate weighted-mean time series per channel
-        preds: dict[str, list[float]] = {ch: [] for ch in available_channels}
-        tgts: dict[str, list[float]] = {ch: [] for ch in available_channels}
+        # Group levels by stream: one read per stream and step, each stream
+        # reduced with its own coordinates.
+        by_stream: dict[str, list[LevelRef]] = {}
+        for ref in refs:
+            by_stream.setdefault(ref.stream, []).append(ref)
+        coords = {s: get_coords(zio, s, sample) for s in by_stream}
+        n_points = len(find_polar_cap_indices(coords[refs[0].stream], min_latitude))
+
+        preds: dict[float, list[float]] = {r.pressure: [] for r in refs}
+        tgts: dict[float, list[float]] = {r.pressure: [] for r in refs}
         times_list: list = []
 
         for step in steps:
-            pred_arr, tgt_arr, times = _load_step_data(zio, stream_name, step, sample)
-
-            for ch, ch_idx in available_channels.items():
-                pred_polar = pred_arr[polar_indices, ch_idx, 0]
-                tgt_polar = tgt_arr[polar_indices, ch_idx, 0]
-                preds[ch].append(float(np.sum(pred_polar * weights)))
-                tgts[ch].append(float(np.sum(tgt_polar * weights)))
-
-            times_list.append(times[0])
+            step_time = None
+            for stream, s_refs in by_stream.items():
+                pred, tgt, times = load_levels(zio, s_refs, step, sample)  # (pts, lev, ens)
+                step_time = times[0] if step_time is None else step_time
+                for j, ref in enumerate(s_refs):
+                    # polar_cap_mean over (n_ens, n_pts) → per-member means → ensemble mean
+                    pm = polar_cap_mean(pred[:, j, :].T, coords[stream], min_latitude)
+                    tm = polar_cap_mean(tgt[:, j, :].T, coords[stream], min_latitude)
+                    preds[ref.pressure].append(float(np.mean(pm)))
+                    tgts[ref.pressure].append(float(np.mean(tm)))
+            times_list.append(step_time)
 
     times_arr = np.array(times_list)
     datetimes = convert_times_to_datetime(times_arr)
 
-    channels_data: dict[str, dict[str, np.ndarray]] = {
-        ch: {
-            "predictions": np.array(preds[ch]),
-            "targets": np.array(tgts[ch]),
+    levels_data: dict[float, dict[str, Any]] = {
+        r.pressure: {
+            "predictions": np.array(preds[r.pressure]),
+            "targets": np.array(tgts[r.pressure]),
+            "channel": r.channel,
+            "stream": r.stream,
         }
-        for ch in available_channels
+        for r in refs
     }
 
     _logger.info(
@@ -184,28 +226,13 @@ def extract_polar_cap_temperature(
 
     return {
         "label": label,
-        "channels": channels_data,
+        "levels": levels_data,
         "times": times_arr,
         "datetimes": datetimes,
         "min_latitude": min_latitude,
-        "n_points": int(len(polar_indices)),
+        "n_points": int(n_points),
         "color": color,
     }
-
-
-def _load_step_data(
-    zio: Any,
-    stream: str,
-    step: int,
-    sample: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return ``(pred, tgt, times)`` with pred/tgt always 3-D (pts, channels, ens)."""
-    from weathergen.stratosphere.io import load_step
-
-    pred, tgt, times = load_step(zio, stream, step, sample)
-    pred = np.atleast_3d(pred)
-    tgt = np.atleast_3d(tgt)
-    return pred, tgt, times
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +241,7 @@ def _load_step_data(
 
 
 def _merge_targets(
-    data_list: list[dict[str, Any]], channel: str
+    data_list: list[dict[str, Any]], pressure: float
 ) -> tuple[list[datetime], list[float]]:
     """
     Merge ERA5 target time series from multiple runs into one, analogous to
@@ -226,10 +253,10 @@ def _merge_targets(
     """
     seen: dict[datetime, float] = {}
     for d in data_list:
-        if channel not in d["channels"]:
+        if pressure not in d["levels"]:
             continue
-        ch_data = d["channels"][channel]
-        for dt, val in zip(d["datetimes"], ch_data["targets"], strict=False):
+        lv_data = d["levels"][pressure]
+        for dt, val in zip(d["datetimes"], lv_data["targets"], strict=True):
             if dt not in seen:
                 seen[dt] = val
     if not seen:
@@ -263,36 +290,32 @@ def plot_polar_cap_temperature(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect all unique channels that appear in any experiment
-    all_channels: list[str] = sorted(
-        {ch for data in data_list for ch in data["channels"]}
-    )
-    if not all_channels:
-        _logger.warning("No channels to plot.")
+    # All pressure levels that appear in any experiment, top → bottom
+    all_pressures: list[float] = sorted({p for data in data_list for p in data["levels"]})
+    if not all_pressures:
+        _logger.warning("No levels to plot.")
         return
 
-    n_panels = len(all_channels)
+    n_panels = len(all_pressures)
     fig, axes = plt.subplots(n_panels, 1, figsize=(14, 5 * n_panels), squeeze=False)
     axes = axes.flatten()
 
-    for ax, channel in zip(axes, all_channels):
-        # Build a human-readable pressure label
-        p_hpa = channel_pressure(channel)
-        level_label = f"{channel}  ({p_hpa:.0f} hPa)" if p_hpa is not None else channel
+    for ax, pressure in zip(axes, all_pressures, strict=True):
+        level_label = f"t {format_pressure(pressure)}"
 
         # One prediction line per experiment, using the experiment's own
         # config colour when set (falls back to a cyclic palette otherwise).
         for color_idx, data in enumerate(data_list):
-            if channel not in data["channels"]:
+            if pressure not in data["levels"]:
                 continue
 
             datetimes = data["datetimes"]
-            ch_data = data["channels"][channel]
+            lv_data = data["levels"][pressure]
             color = data.get("color") or _COLORS[color_idx % len(_COLORS)]
 
             ax.plot(
                 datetimes,
-                ch_data["predictions"],
+                lv_data["predictions"],
                 color=color,
                 linestyle="-",
                 linewidth=2.5,
@@ -300,7 +323,7 @@ def plot_polar_cap_temperature(
             )
 
         # Single merged ERA5 target line
-        tgt_times, tgt_vals = _merge_targets(data_list, channel)
+        tgt_times, tgt_vals = _merge_targets(data_list, pressure)
         if tgt_times:
             ax.plot(tgt_times, tgt_vals, color="k", lw=2, ls="--", alpha=0.8)
 
@@ -349,9 +372,7 @@ def main(argv: list[str] | None = None) -> None:
         datefmt="%H:%M:%S",
     )
 
-    parser = argparse.ArgumentParser(
-        description="Polar cap temperature analysis for SSW events."
-    )
+    parser = argparse.ArgumentParser(description="Polar cap temperature analysis for SSW events.")
     parser.add_argument(
         "--validations-config",
         type=Path,
@@ -377,14 +398,25 @@ def main(argv: list[str] | None = None) -> None:
         help="Southern boundary of polar cap (°N).  [default: 60.0]",
     )
     parser.add_argument(
+        "--levels",
+        nargs="+",
+        type=float,
+        metavar="HPA",
+        default=None,
+        help=(
+            "Pressure levels (hPa) to plot; the nearest available level in any "
+            "stream is used.  [default: 2 10 30 50, falling back to all levels "
+            "≤ 100 hPa]"
+        ),
+    )
+    parser.add_argument(
+        "--channels",
         "--t-channels",
+        dest="channels",
         nargs="+",
         metavar="CHANNEL",
         default=None,
-        help=(
-            "Explicit temperature channels to plot (e.g. t_29 t_51 t_5).  "
-            "Default: t_19/t_29/t_40/t_48 (≈ 2.5, 10, 28, 50 hPa)."
-        ),
+        help="Legacy alias of --levels: explicit channel names (e.g. t_19 t_29 or t_10 t_50).",
     )
     parser.add_argument(
         "--ssw-date",
@@ -394,9 +426,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    print("=" * 60)
-    print("POLAR CAP TEMPERATURE ANALYSIS")
-    print("=" * 60)
+    _logger.info("Polar cap temperature analysis")
 
     cfg = load_validations_config(args.validations_config)
     events = group_validations_by_event(cfg)
@@ -409,9 +439,7 @@ def main(argv: list[str] | None = None) -> None:
         event_ssw_date = event_reference_date(event_cfg, args.ssw_date)
         # Keep the flat (un-nested) output layout when there is only one
         # event, so existing single-event configs are unaffected.
-        event_output_dir = (
-            args.output_dir if single_event else args.output_dir / event_name
-        )
+        event_output_dir = args.output_dir if single_event else args.output_dir / event_name
 
         run_specs = [
             (label, spec["id"], spec["sample"], spec.get("rank", 0), spec.get("color"))
@@ -432,31 +460,35 @@ def main(argv: list[str] | None = None) -> None:
                 label,
                 args.min_latitude,
                 sample,
-                t_channels_override=args.t_channels,
+                channels=args.channels,
+                levels_hpa=args.levels,
                 color=color,
             )
 
             if data is None:
-                _logger.warning("Skipping %s — no suitable temperature channels.", label)
+                _logger.warning("Skipping %s — no suitable temperature levels.", label)
                 continue
 
             data_list.append(data)
 
-            # Detect warming events per channel
+            # Detect warming events per level
             results.setdefault(event_name, {})[label] = {}
-            for ch, ch_data in data["channels"].items():
-                pred_event = detect_warming_event(ch_data["predictions"], data["datetimes"])
-                tgt_event = detect_warming_event(ch_data["targets"], data["datetimes"])
+            for pressure, lv_data in data["levels"].items():
+                pred_event = detect_warming_event(lv_data["predictions"], data["datetimes"])
+                tgt_event = detect_warming_event(lv_data["targets"], data["datetimes"])
 
                 _logger.info(
                     "[%s] %s  %s  pred=%s  tgt=%s",
                     event_name,
                     label,
-                    ch,
+                    format_pressure(pressure),
                     pred_event,
                     tgt_event,
                 )
-                results[event_name][label][ch] = {
+                results[event_name][label][level_key(pressure)] = {
+                    "pressure_hpa": pressure,
+                    "channel": lv_data["channel"],
+                    "stream": lv_data["stream"],
                     "prediction": pred_event,
                     "target": tgt_event,
                 }
@@ -470,7 +502,7 @@ def main(argv: list[str] | None = None) -> None:
         plot_polar_cap_temperature(data_list, event_output_dir, event_ssw_date)
 
     if not any_data:
-        print("No data extracted — check data-dir and validations config.")
+        _logger.warning("No data extracted — check data-dir and validations config.")
         return
 
     # Save warming-event summary (keyed by event when there is more than one)
@@ -481,7 +513,7 @@ def main(argv: list[str] | None = None) -> None:
         json.dump(results_out, fh, indent=2, default=str)
     _logger.info("Saved %s", json_path)
 
-    print("Analysis complete.")
+    _logger.info("Analysis complete.")
 
 
 if __name__ == "__main__":

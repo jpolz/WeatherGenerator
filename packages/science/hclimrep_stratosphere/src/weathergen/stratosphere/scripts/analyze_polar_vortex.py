@@ -10,19 +10,31 @@ Polar Vortex Analysis for SSW Event Prediction.
 Analyses zonal mean zonal wind at 60°N to detect Sudden Stratospheric Warming
 events and compares model predictions against ERA5 targets.
 
+Levels are addressed by pressure (hPa).  A forecast store of the strato_s2s
+arms spreads the atmospheric column over several streams (``ERA5pl`` for
+50–1000 hPa, ``S2Spredictors`` for 1–70 hPa, ``TEM`` for model-level TEM
+diagnostics); the level-aware I/O layer merges them into one pressure axis
+per variable, so 10 hPa and 50 hPa are found regardless of which stream holds
+them.  Levels missing from a store (e.g. nothing above 50 hPa in the
+``memory`` arm) are skipped with a warning.  SSW wind-reversal detection is
+performed on the 10 hPa level only.
+
 Usage::
 
     ssw-analyze polar-vortex \\
         --validations-config eval_config/validations.yml \\
         --data-dir /path/to/validation/data \\
         --output-dir plots/polar_vortex \\
-        --channels u_29 u_55
+        --levels 10 50
 
 Or as a module::
 
     python -m weathergen.stratosphere.scripts.analyze_polar_vortex \\
         --run-ids qq8xsoeh j7ns9146 \\
         --data-dir ./data
+
+``--channels u_29 u_55`` (legacy model-level channel names) is still accepted
+and resolved against every stream in the store.
 """
 
 from __future__ import annotations
@@ -37,28 +49,48 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 
-from weathergen.stratosphere.diagnostics import detect_ssw_reversal
+from weathergen.stratosphere.diagnostics import detect_ssw_reversal, zonal_mean
 from weathergen.stratosphere.io import (
+    LevelRef,
     convert_times_to_datetime,
-    find_latitude_indices,
-    get_channels,
     get_coords,
     get_forecast_steps,
-    get_stream,
-    load_step,
+    load_level,
     open_validation,
+    resolve_channel_arg,
     zarr_store_path,
+)
+from weathergen.stratosphere.levels import (
+    build_level_map,
+    format_pressure,
+    stream_level_type,
 )
 
 _logger = logging.getLogger(__name__)
 
-# Default channels to extract (priority order; first match per variable is used)
-_DEFAULT_U_CHANNELS = ["u_29", "u_55"]  # ERA5ml (model-level indices; u_29 ~ 10hPa)
-_DEFAULT_U_CHANNELS_PL = ["u_50", "u_500"]  # ERA5pl (only 50/500/850hPa exist)
+# Default pressure levels (hPa) for the zonal-mean u-wind at 60°N
+_DEFAULT_U_LEVELS_HPA = [10.0, 50.0]
+
+# Pressure level (hPa) on which SSW wind reversals are diagnosed (WMO definition)
+SSW_LEVEL_HPA = 10.0
+
+# Latitude tolerance (degrees) for the zonal mean band around --latitude
+_LAT_TOLERANCE = 2.5
 
 # Known SSW event date for reference lines
 SSW_DATE = datetime(2018, 2, 12)
+
+
+def level_tag(pressure_hpa: float, variable: str = "u") -> str:
+    """Filename-safe tag for a level, e.g. ``'u10hPa'``."""
+    return f"{variable}{pressure_hpa:g}hPa"
+
+
+def is_ssw_level(pressure_hpa: float, tolerance_frac: float = 0.25) -> bool:
+    """``True`` if *pressure_hpa* is the (nearest-available) 10 hPa level."""
+    return abs(pressure_hpa - SSW_LEVEL_HPA) / SSW_LEVEL_HPA <= tolerance_frac
 
 
 # ---------------------------------------------------------------------------
@@ -66,32 +98,59 @@ SSW_DATE = datetime(2018, 2, 12)
 # ---------------------------------------------------------------------------
 
 
+def _match_climatology_channels(
+    refs: list[LevelRef], clim_channels: list[str], tolerance_frac: float = 0.25
+) -> dict[float, str | None]:
+    """
+    Map each level's pressure → channel name in the climatology store.
+
+    The climatology may be written on model levels (``u_29``) or pressure
+    levels (``u_10``); match by pressure first, then by exact channel name.
+    """
+    out: dict[float, str | None] = {}
+    lt = stream_level_type("climatology", clim_channels)
+    for ref in refs:
+        clim_map = build_level_map(ref.variable, clim_channels, lt)  # {channel: hPa}
+        best: str | None = None
+        if clim_map:
+            ch, p = min(clim_map.items(), key=lambda kv: abs(np.log(kv[1]) - np.log(ref.pressure)))
+            if abs(p - ref.pressure) / ref.pressure <= tolerance_frac:
+                best = ch
+        if best is None and ref.channel in clim_channels:
+            best = ref.channel
+        out[ref.pressure] = best
+    return out
+
+
 def load_climatology_zonal_mean(
     climatology_path: Path,
-    channels: list[str],
+    refs: list[LevelRef],
     datetimes: list[datetime],
     target_latitude: float = 60.0,
-) -> dict[str, np.ndarray]:
+) -> dict[float, NDArray]:
     """
     Load zonal mean climatology at *target_latitude* for each datetime.
 
     Matches by day-of-year + hour so the result is independent of forecast year.
-    Returns a dict mapping channel -> float array (one value per datetime).
+    Returns a dict mapping pressure (hPa) -> float array (one value per datetime).
     """
     import xarray as xr
+
+    from weathergen.stratosphere.io import find_latitude_indices
 
     _logger.info("Loading climatology from %s …", climatology_path)
     clim = xr.open_zarr(climatology_path)
 
     # Grid-point indices near target latitude
     clim_coords = np.column_stack([clim.latitude.values, clim.longitude.values])
-    lat_indices = find_latitude_indices(clim_coords, target_latitude)
+    lat_indices = find_latitude_indices(clim_coords, target_latitude, _LAT_TOLERANCE)
 
     clim_channels = list(clim.channels.values)
-    available_chs = [ch for ch in channels if ch in clim_channels]
-    missing_chs = [ch for ch in channels if ch not in clim_channels]
-    if missing_chs:
-        _logger.warning("Channels not in climatology: %s", missing_chs)
+    p_to_ch = _match_climatology_channels(refs, clim_channels)
+    available = {p: ch for p, ch in p_to_ch.items() if ch is not None}
+    missing = [p for p, ch in p_to_ch.items() if ch is None]
+    if missing:
+        _logger.warning("Levels not in climatology: %s", [format_pressure(p) for p in missing])
 
     # Match each datetime to climatology time by DOY + hour
     clim_times = pd.to_datetime(clim.time.values)
@@ -105,29 +164,28 @@ def load_climatology_zonal_mean(
         idx = np.where(mask)[0]
         time_indices.append(int(idx[0]) if len(idx) > 0 else -1)
 
-    # Bulk-load: unique time steps × needed channels × lat-band points
+    result: dict[float, NDArray] = {
+        p: np.full(len(datetimes), np.nan, dtype=np.float64) for p in p_to_ch
+    }
     unique_t = sorted({t for t in time_indices if t >= 0})
-    ch_indices = [clim_channels.index(ch) for ch in available_chs]
+    if not available or not unique_t:
+        return result
+
+    # Bulk-load: unique time steps × needed channels × lat-band points
+    pressures = list(available)
+    ch_indices = [clim_channels.index(available[p]) for p in pressures]
 
     # clim.data shape: (time, channels, grid_points)
-    clim_block = (
-        clim.data
-        .isel(time=unique_t, channels=ch_indices)
-        .values[:, :, lat_indices]  # (n_t, n_ch, n_latpts)
-    )
+    clim_block = clim.data.isel(time=unique_t, channels=ch_indices).values[
+        :, :, lat_indices
+    ]  # (n_t, n_ch, n_latpts)
     zonal_means = clim_block.mean(axis=2)  # (n_t, n_ch)
     t_pos = {t: i for i, t in enumerate(unique_t)}
 
-    result: dict[str, np.ndarray] = {}
-    for ci, ch in enumerate(available_chs):
-        vals = np.full(len(datetimes), np.nan, dtype=np.float64)
+    for ci, p in enumerate(pressures):
         for ti, t in enumerate(time_indices):
             if t >= 0:
-                vals[ti] = zonal_means[t_pos[t], ci]
-        result[ch] = vals
-    for ch in missing_chs:
-        result[ch] = np.full(len(datetimes), np.nan, dtype=np.float64)
-
+                result[p][ti] = zonal_means[t_pos[t], ci]
     return result
 
 
@@ -136,10 +194,104 @@ def load_climatology_zonal_mean(
 # ---------------------------------------------------------------------------
 
 
+def extract_zonal_wind_from_store(
+    zio: Any,
+    label: str,
+    refs: list[LevelRef],
+    sample: int = 0,
+    target_latitude: float = 60.0,
+    climatology_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """
+    Extract zonal mean u-wind at *target_latitude* for the given levels from an
+    already-open validation store.
+
+    See :func:`extract_zonal_wind` for the returned structure.
+    """
+    if not refs:
+        _logger.warning("%s: no u-wind levels to extract.", label)
+        return None
+
+    steps = get_forecast_steps(zio)
+    coords_by_stream = {s: get_coords(zio, s, sample) for s in {r.stream for r in refs}}
+
+    preds_by_p: dict[float, list[NDArray]] = {r.pressure: [] for r in refs}
+    targets_by_p: dict[float, list[float]] = {r.pressure: [] for r in refs}
+    times_list: list[Any] = []
+
+    for step in steps:
+        step_time = None
+        for ref in refs:
+            pred, tgt, times = load_level(zio, ref, step, sample)  # (n_pts, n_ens)
+            coords = coords_by_stream[ref.stream]
+            # Zonal mean over the ±tolerance band, keep all ensemble members → (n_ens,)
+            preds_by_p[ref.pressure].append(
+                zonal_mean(pred.T, coords, target_latitude, _LAT_TOLERANCE)
+            )
+            # Target: single value (first member — targets carry no real ensemble)
+            targets_by_p[ref.pressure].append(
+                float(zonal_mean(tgt[:, 0], coords, target_latitude, _LAT_TOLERANCE))
+            )
+            if step_time is None:
+                step_time = times[0]
+        times_list.append(step_time)
+
+    times_arr = np.array(times_list)
+    datetimes = convert_times_to_datetime(times_arr)
+
+    _logger.info(
+        "  %s: %d forecast steps, %s → %s, levels %s",
+        label,
+        len(steps),
+        datetimes[0],
+        datetimes[-1],
+        [f"{r.pressure:g} hPa ({r.stream}/{r.channel})" for r in refs],
+    )
+
+    # preds_np[p]: (n_steps, n_ens) — one row per forecast step, one col per member
+    preds_np = {p: np.stack(v, axis=0) for p, v in preds_by_p.items()}
+    targets_np = {p: np.array(v) for p, v in targets_by_p.items()}
+
+    # Always store absolute values so that detect_ssw_reversal (u < 0 criterion)
+    # works correctly.  Anomalies are kept separately for optional plotting.
+    clim_means: dict[float, NDArray] = {}
+    if climatology_path is not None:
+        clim_means = load_climatology_zonal_mean(climatology_path, refs, datetimes, target_latitude)
+
+    return {
+        "label": label,
+        "sample": sample,
+        "color": None,  # filled by caller
+        "is_anomaly": climatology_path is not None,
+        "levels": {
+            ref.pressure: {
+                "ref": ref,
+                "predictions": preds_np[ref.pressure],
+                "targets": targets_np[ref.pressure],
+                # anomaly arrays present only when climatology was supplied
+                **(
+                    {
+                        # clim_means[p] is (n_steps,); broadcast over ens dim
+                        "pred_anomaly": preds_np[ref.pressure] - clim_means[ref.pressure][:, None],
+                        "tgt_anomaly": targets_np[ref.pressure] - clim_means[ref.pressure],
+                    }
+                    if ref.pressure in clim_means
+                    else {}
+                ),
+            }
+            for ref in refs
+        },
+        "times": times_arr,
+        "datetimes": datetimes,
+        "latitude": target_latitude,
+    }
+
+
 def extract_zonal_wind(
     zarr_path: Path,
     label: str,
     channels_override: list[str] | None = None,
+    levels_hpa: list[float] | None = None,
     sample: int = 0,
     target_latitude: float = 60.0,
     climatology_path: Path | None = None,
@@ -150,101 +302,38 @@ def extract_zonal_wind(
     Args:
         zarr_path:         Path to the ``.zarr`` store.
         label:             Human-readable label for logging/plotting.
-        channels_override: Explicit list of channel names. Auto-detected when ``None``.
+        channels_override: Legacy explicit channel names (``u_29`` ...), looked
+                           up in every stream.  Takes precedence over *levels_hpa*.
+        levels_hpa:        Pressure levels in hPa; defaults to 10 and 50 hPa.
+                           Levels missing from the store are skipped with a warning.
         sample:            Ensemble member index (default 0).
         target_latitude:   Latitude for zonal mean (default 60°N).
         climatology_path:  If provided, subtract the DOY climatology mean to
                            return anomalies instead of absolute values.
 
     Returns:
-        Dict with keys ``label``, ``channels`` (dict per channel with
-        ``predictions`` / ``targets``), ``times``, ``datetimes``, ``latitude``,
-        ``is_anomaly``; or ``None`` on failure.
+        Dict with keys ``label``, ``levels`` (dict keyed by pressure in hPa,
+        each with ``ref`` / ``predictions`` / ``targets``), ``times``,
+        ``datetimes``, ``latitude``, ``is_anomaly``; or ``None`` on failure.
     """
     _logger.info("Extracting zonal wind for %s (sample %d) …", label, sample)
 
     with open_validation(zarr_path) as zio:
-        stream_name = get_stream(zio)
-        steps = get_forecast_steps(zio)
-        channels = get_channels(zio, stream_name, sample)
-        coords = get_coords(zio, stream_name, sample)
-
-        # Select channels
-        defaults = _DEFAULT_U_CHANNELS if stream_name == "ERA5ml" else _DEFAULT_U_CHANNELS_PL
-        wanted = channels_override or defaults
-        available = {ch: channels.index(ch) for ch in wanted if ch in channels}
-
-        if not available:
-            _logger.warning(
-                "None of %s found in %s. Available u-channels: %s",
-                wanted,
-                label,
-                [c for c in channels if c.startswith("u_")],
+        try:
+            refs = resolve_channel_arg(
+                zio, "u", channels_override, levels_hpa, _DEFAULT_U_LEVELS_HPA, sample
             )
+        except KeyError as e:
+            _logger.warning("%s: %s — skipping.", label, e)
             return None
-
-        lat_indices = find_latitude_indices(coords, target_latitude)
-
-        preds_by_ch: dict[str, list[np.ndarray]] = {ch: [] for ch in available}
-        targets_by_ch: dict[str, list[float]] = {ch: [] for ch in available}
-        times_list: list[Any] = []
-
-        for step in steps:
-            pred, tgt, times = load_step(zio, stream_name, step, sample)
-            pred3 = np.atleast_3d(pred)  # (n_pts, n_ch, n_ens)
-            for ch, ch_idx in available.items():
-                # Mean over lat band, keep all ensemble members → (n_ens,)
-                preds_by_ch[ch].append(pred3[lat_indices, ch_idx, :].mean(axis=0))
-                # target may have no ens dim in older stores — handle both shapes
-                tgt_slice = (
-                    tgt[lat_indices, ch_idx, 0] if tgt.ndim == 3 else tgt[lat_indices, ch_idx]
-                )
-                targets_by_ch[ch].append(float(np.mean(tgt_slice)))
-            times_list.append(times[0])
-
-    times_arr = np.array(times_list)
-    datetimes = convert_times_to_datetime(times_arr)
-
-    _logger.info("  %d forecast steps, %s → %s", len(steps), datetimes[0], datetimes[-1])
-
-    # preds_np[ch]: (n_steps, n_ens) — one row per forecast step, one col per ensemble member
-    preds_np = {ch: np.stack(preds_by_ch[ch], axis=0) for ch in available}
-    targets_np = {ch: np.array(targets_by_ch[ch]) for ch in available}
-
-    # Always store absolute values so that detect_ssw_reversal (u < 0 criterion)
-    # works correctly.  Anomalies are kept separately for optional plotting.
-    clim_means: dict[str, np.ndarray] = {}
-    if climatology_path is not None:
-        clim_means = load_climatology_zonal_mean(
-            climatology_path, list(available.keys()), datetimes, target_latitude
+        return extract_zonal_wind_from_store(
+            zio,
+            label,
+            refs,
+            sample=sample,
+            target_latitude=target_latitude,
+            climatology_path=climatology_path,
         )
-
-    return {
-        "label": label,
-        "sample": sample,
-        "color": None,  # filled by caller
-        "is_anomaly": climatology_path is not None,
-        "channels": {
-            ch: {
-                "predictions": preds_np[ch],
-                "targets": targets_np[ch],
-                # anomaly arrays present only when climatology was supplied
-                **(
-                    {
-                        # clim_means[ch] is (n_steps,); broadcast over ens dim
-                        "pred_anomaly": preds_np[ch] - clim_means[ch][:, None],
-                        "tgt_anomaly": targets_np[ch] - clim_means[ch],
-                    }
-                    if ch in clim_means
-                    else {}
-                ),
-            }
-            for ch in available
-        },
-        "times": times_arr,
-        "datetimes": datetimes,
-        "latitude": target_latitude,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +342,7 @@ def extract_zonal_wind(
 
 
 def _merge_targets(
-    data_list: list[dict[str, Any]], ch: str, use_anomaly: bool = False
+    data_list: list[dict[str, Any]], pressure: float, use_anomaly: bool = False
 ) -> tuple[list[datetime], list[float]]:
     """
     Merge ERA5 target time series from multiple runs into one.
@@ -262,11 +351,11 @@ def _merge_targets(
     """
     seen: dict[datetime, float] = {}
     for d in data_list:
-        if ch not in d["channels"]:
+        if pressure not in d["levels"]:
             continue
-        ch_data = d["channels"][ch]
-        vals = ch_data.get("tgt_anomaly", ch_data["targets"]) if use_anomaly else ch_data["targets"]
-        for dt, val in zip(d["datetimes"], vals, strict=False):
+        lv = d["levels"][pressure]
+        vals = lv.get("tgt_anomaly", lv["targets"]) if use_anomaly else lv["targets"]
+        for dt, val in zip(d["datetimes"], vals, strict=True):
             if dt not in seen:
                 seen[dt] = val
     if not seen:
@@ -282,7 +371,7 @@ def _merge_targets(
 
 def compute_hit_miss(
     data_list: list[dict[str, Any]],
-    channel: str,
+    pressure: float,
     event_date: datetime,
     window_days: float = 1.0,
     threshold: float = 0.0,
@@ -290,8 +379,8 @@ def compute_hit_miss(
     """
     Per-run hit/miss of the u-wind reversal around *event_date*.
 
-    A run "hits" if its (ensemble-mean) prediction for *channel* drops below
-    *threshold* at any verifying time within
+    A run "hits" if its (ensemble-mean) prediction at *pressure* (hPa) drops
+    below *threshold* at any verifying time within
     ``[event_date - window_days, event_date + window_days]``.  Each run's
     init time is simply its first datetime — one record per run, keyed by
     init time, with no grouping applied (left to downstream analysis, e.g.
@@ -310,11 +399,11 @@ def compute_hit_miss(
 
     records: list[dict[str, Any]] = []
     for data in data_list:
-        if channel not in data["channels"]:
+        if pressure not in data["levels"]:
             continue
 
         datetimes = data["datetimes"]
-        pred_arr = np.asarray(data["channels"][channel]["predictions"])
+        pred_arr = np.asarray(data["levels"][pressure]["predictions"])
         pred_for_ssw = pred_arr.mean(axis=1) if pred_arr.ndim == 2 else pred_arr
 
         mask = np.array([window_lo <= dt <= window_hi for dt in datetimes])
@@ -338,52 +427,43 @@ def plot_zonal_wind_comparison(
     use_anomaly: bool = False,
 ) -> None:
     """
-    Plot zonal mean u-wind time series: one panel with all forecasts and a
-    single merged ERA5 target line.
+    Plot zonal mean u-wind time series: one figure per pressure level with all
+    forecasts and a single merged ERA5 target line.
 
     Args:
         data_list:   List of dicts returned by :func:`extract_zonal_wind`.
         output_dir:  Directory for saved figures.
         ssw_date:    Reference SSW date for vertical line.
+        event_tag:   Tag used in output filenames.
         use_anomaly: Plot climatology anomalies instead of absolute values.
                      Requires that ``extract_zonal_wind`` was called with a
                      ``climatology_path``.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    all_channels: set[str] = set()
+    all_levels: set[float] = set()
     for d in data_list:
-        all_channels.update(d["channels"].keys())
-    sorted_channels = sorted(all_channels)
+        all_levels.update(d["levels"].keys())
+    sorted_levels = sorted(all_levels)
 
     fallback_colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628"]
+    latitude = data_list[0]["latitude"] if data_list else 60.0
 
-    for ch in sorted_channels:
+    for p in sorted_levels:
         fig, ax = plt.subplots(figsize=(14, 5))
 
-        # One prediction line per run (ensemble mean + spread shading when n_ens > 1)
+        # One prediction line per run (one thin line per ensemble member when n_ens > 1)
         for i, d in enumerate(data_list):
-            if ch not in d["channels"]:
+            if p not in d["levels"]:
                 continue
             color = d.get("color") or fallback_colors[i % len(fallback_colors)]
-            ch_data = d["channels"][ch]
+            lv = d["levels"][p]
             plot_vals = (
-                ch_data.get("pred_anomaly", ch_data["predictions"])
-                if use_anomaly
-                else ch_data["predictions"]
+                lv.get("pred_anomaly", lv["predictions"]) if use_anomaly else lv["predictions"]
             )
             # plot_vals may be (n_steps,) or (n_steps, n_ens)
             plot_vals = np.asarray(plot_vals)
             if plot_vals.ndim == 2 and plot_vals.shape[1] > 1:
-                # ens_mean = plot_vals.mean(axis=1)
-                # ens_min = plot_vals.min(axis=1)
-                # ens_max = plot_vals.max(axis=1)
-                # ax.fill_between(
-                #     d["datetimes"], ens_min, ens_max, color=color, alpha=0.2
-                # )
-                # ax.plot(
-                #     d["datetimes"], ens_mean, color=color, lw=2, label=d["label"]
-                # )
                 for ens_idx in range(plot_vals.shape[1]):
                     ax.plot(
                         d["datetimes"],
@@ -403,7 +483,7 @@ def plot_zonal_wind_comparison(
                 )
 
         # Single merged ERA5 target line
-        tgt_times, tgt_vals = _merge_targets(data_list, ch, use_anomaly=use_anomaly)
+        tgt_times, tgt_vals = _merge_targets(data_list, p, use_anomaly=use_anomaly)
         if tgt_times:
             ax.plot(tgt_times, tgt_vals, color="k", lw=2, ls="--", label="ERA5")
 
@@ -415,7 +495,10 @@ def plot_zonal_wind_comparison(
         ylabel = "u-wind anomaly (m/s)" if use_anomaly else "u-wind (m/s)"
         title_suffix = " anomaly" if use_anomaly else ""
         ax.set_ylabel(ylabel)
-        ax.set_title(f"Zonal mean u{title_suffix} at 60°N — {ch}", fontweight="bold")
+        ax.set_title(
+            f"Zonal mean u{title_suffix} at {latitude:g}°N — {format_pressure(p)}",
+            fontweight="bold",
+        )
         ax.grid(True, alpha=0.3)
         # Legend disabled for now — too many experiments make it unreadable
         # (see analyze_polar_cap_temperature.plot_polar_cap_temperature for the
@@ -426,7 +509,7 @@ def plot_zonal_wind_comparison(
         plt.tight_layout()
         tag = event_tag or ssw_date.strftime("%b%Y").lower()
         anom_suffix = "_anomaly" if use_anomaly else ""
-        out = output_dir / f"zonal_wind_60N_{ch}_{tag}{anom_suffix}.png"
+        out = output_dir / f"zonal_wind_{latitude:g}N_{level_tag(p)}_{tag}{anom_suffix}.png"
         fig.savefig(out, dpi=150, bbox_inches="tight")
         plt.close(fig)
         _logger.info("Saved %s", out)
@@ -477,15 +560,38 @@ def _build_event_groups(
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--output-dir", type=Path, default=Path("plots/polar_vortex"))
     parser.add_argument("--run-ids", nargs="+", default=None)
     parser.add_argument("--validations-config", type=Path, default=None)
-    parser.add_argument("--channels", nargs="+", default=None)
+    parser.add_argument(
+        "--levels",
+        nargs="+",
+        type=float,
+        default=None,
+        metavar="HPA",
+        help=(
+            "Pressure levels (hPa) of the zonal-mean u-wind to analyse; the nearest "
+            "available level in any stream is used, missing levels are skipped.  "
+            "[default: 10 50]"
+        ),
+    )
+    parser.add_argument(
+        "--channels",
+        nargs="+",
+        default=None,
+        help="Legacy alias: explicit channel names (e.g. u_29 u_55); overrides --levels.",
+    )
     parser.add_argument("--latitude", type=float, default=60.0)
-    parser.add_argument("--climatology", type=Path, default=None,
-                        help="Path to climatology zarr for anomaly computation.")
+    parser.add_argument(
+        "--climatology",
+        type=Path,
+        default=None,
+        help="Path to climatology zarr for anomaly computation.",
+    )
     parser.add_argument(
         "--ssw-date",
         type=lambda s: datetime.strptime(s, "%Y-%m-%d"),
@@ -513,9 +619,7 @@ def main(argv: list[str] | None = None) -> None:
     single_event = len(event_groups) == 1
 
     for event_name, (run_specs, event_ssw_date) in event_groups.items():
-        event_output_dir = (
-            args.output_dir if single_event else args.output_dir / event_name
-        )
+        event_output_dir = args.output_dir if single_event else args.output_dir / event_name
         all_data: list[dict[str, Any]] = []
 
         for label, vid, sample, rank, color in run_specs:
@@ -528,6 +632,7 @@ def main(argv: list[str] | None = None) -> None:
                 zarr_path,
                 label,
                 channels_override=args.channels,
+                levels_hpa=args.levels,
                 sample=sample,
                 target_latitude=args.latitude,
                 climatology_path=args.climatology,
@@ -537,17 +642,28 @@ def main(argv: list[str] | None = None) -> None:
             data["color"] = color
             all_data.append(data)
 
-            for ch, ch_data in data["channels"].items():
-                pred_arr = np.asarray(ch_data["predictions"])
+            # SSW wind-reversal detection on the 10 hPa level only
+            ssw_levels = [p for p in data["levels"] if is_ssw_level(p)]
+            if not ssw_levels:
+                _logger.warning(
+                    "[%s] %s: no %s level available (have %s) — SSW detection skipped.",
+                    event_name,
+                    label,
+                    format_pressure(SSW_LEVEL_HPA),
+                    [format_pressure(p) for p in data["levels"]],
+                )
+            for p in ssw_levels:
+                lv = data["levels"][p]
+                pred_arr = np.asarray(lv["predictions"])
                 # Use ensemble mean for SSW detection when multiple members are present
                 pred_for_ssw = pred_arr.mean(axis=1) if pred_arr.ndim == 2 else pred_arr
                 pred_ssw = detect_ssw_reversal(pred_for_ssw, data["datetimes"])
-                tgt_ssw = detect_ssw_reversal(ch_data["targets"], data["datetimes"])
+                tgt_ssw = detect_ssw_reversal(lv["targets"], data["datetimes"])
                 _logger.info(
                     "[%s] %s / %s  pred=%s  target=%s",
                     event_name,
                     label,
-                    ch,
+                    format_pressure(p),
                     pred_ssw,
                     tgt_ssw,
                 )
@@ -578,25 +694,26 @@ def main(argv: list[str] | None = None) -> None:
                 use_anomaly=True,
             )
 
-        # Per-init-time hit/miss JSON (one list per channel) — a raw,
+        # Per-init-time hit/miss JSON (one list per pressure level) — a raw,
         # ungrouped record of which runs' predictions reversed near
         # event_ssw_date, left for downstream grouping (e.g. by nominal IFS
         # S2S cycle or by lead time) rather than aggregated here.
-        all_channels = sorted({ch for d in all_data for ch in d["channels"]})
+        all_levels = sorted({p for d in all_data for p in d["levels"]})
         hit_miss: dict[str, Any] = {
             "event": event_name,
             "event_date": event_ssw_date.isoformat(),
             "window_days": args.hit_miss_window_days,
             "threshold": args.hit_miss_threshold,
-            "channels": {
-                ch: compute_hit_miss(
+            "latitude": args.latitude,
+            "levels": {
+                format_pressure(p): compute_hit_miss(
                     all_data,
-                    ch,
+                    p,
                     event_ssw_date,
                     window_days=args.hit_miss_window_days,
                     threshold=args.hit_miss_threshold,
                 )
-                for ch in all_channels
+                for p in all_levels
             },
         }
         event_output_dir.mkdir(parents=True, exist_ok=True)

@@ -16,13 +16,22 @@ Four plots are produced:
   3. u60N RMSE at the SSW date vs lead time — bar chart per experiment
   4. Ensemble spread (std) at the SSW date vs lead time — bar chart
 
+The level is addressed by pressure (hPa, default 10 hPa).  Forecast stores of
+the strato_s2s arms spread the atmospheric column over several streams
+(``ERA5pl`` 50–1000 hPa, ``S2Spredictors`` 1–70 hPa); the level-aware I/O
+layer locates the requested pressure in whichever stream holds it.  Runs whose
+store lacks the level (e.g. the ``memory`` arm has nothing above 50 hPa) are
+skipped with a warning.
+
 Usage::
 
     ssw-analyze ssw-lead-times \\
         --validations-config eval_config/ssw_lead_times.yml \\
         --data-dir /path/to/validation/data \\
         --output-dir plots/lead_time \\
-        --channel u_29
+        --level 10
+
+``--channel u_29`` (legacy model-level channel name) is still accepted.
 """
 
 from __future__ import annotations
@@ -36,29 +45,29 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy.typing import NDArray
+
 from weathergen.stratosphere.config import load_validations_config
 from weathergen.stratosphere.diagnostics import detect_ssw_reversal
-from weathergen.stratosphere.io import zarr_store_path
-from weathergen.stratosphere.levels import channel_pressure
-from weathergen.stratosphere.scripts.analyze_polar_vortex import extract_zonal_wind
+from weathergen.stratosphere.io import (
+    open_validation,
+    resolve_channel_arg,
+    zarr_store_path,
+)
+from weathergen.stratosphere.levels import format_pressure
+from weathergen.stratosphere.scripts.analyze_polar_vortex import (
+    extract_zonal_wind_from_store,
+    level_tag,
+)
 
 _logger = logging.getLogger(__name__)
 
 SSW_DATE = datetime(2018, 2, 12)
 
+# Default pressure level (hPa): the WMO SSW definition uses u at 60°N / 10 hPa
+_DEFAULT_LEVEL_HPA = 10.0
+
 _FALLBACK_COLORS = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628"]
-
-
-def _channel_label(channel: str) -> str:
-    """Return a human-readable pressure label for a channel name."""
-    p = channel_pressure(channel)
-    if p is None:
-        return channel
-    parts = channel.split("_")
-    level = int(parts[1]) if len(parts) == 2 else None
-    if level is not None and level < 150:
-        return f"{p:.0f} hPa (L{level})"
-    return f"{p:.0f} hPa"
 
 
 # ---------------------------------------------------------------------------
@@ -69,33 +78,60 @@ def _channel_label(channel: str) -> str:
 def extract_run(
     zarr_path: Path,
     label: str,
-    channel: str,
+    channel: str | None = None,
+    level_hpa: float | None = None,
     sample: int = 0,
     target_latitude: float = 60.0,
 ) -> dict[str, Any] | None:
     """
-    Extract zonal mean u-wind for a single channel from one validation zarr.
+    Extract zonal mean u-wind for a single level from one validation zarr.
 
-    Thin wrapper around :func:`~analyze_polar_vortex.extract_zonal_wind` that
-    returns a flat dict (``predictions`` / ``targets`` as top-level arrays)
-    as expected by the skill-metric helpers in this module.
+    The level is resolved once per store via
+    :func:`~weathergen.stratosphere.io.resolve_channel_arg` (legacy *channel*
+    name takes precedence over *level_hpa*; default 10 hPa).  Returns a flat
+    dict (``predictions`` / ``targets`` as top-level arrays) as expected by the
+    skill-metric helpers in this module, or ``None`` if the level is missing.
     """
-    data = extract_zonal_wind(
-        zarr_path,
-        label,
-        channels_override=[channel],
-        sample=sample,
-        target_latitude=target_latitude,
-    )
-    if data is None or channel not in data["channels"]:
+    _logger.info("Extracting zonal wind for %s (sample %d) …", label, sample)
+    with open_validation(zarr_path) as zio:
+        try:
+            refs = resolve_channel_arg(
+                zio,
+                "u",
+                [channel] if channel else None,
+                [level_hpa] if level_hpa is not None else None,
+                [_DEFAULT_LEVEL_HPA],
+                sample,
+            )
+        except KeyError as e:
+            _logger.warning("%s: %s — skipping.", label, e)
+            return None
+        # resolve_channel_arg falls back to *all* levels when the requested one is
+        # absent (memory arm has nothing above 50 hPa) — treat that as missing.
+        if len(refs) != 1:
+            _logger.warning(
+                "%s: level %s not available (have %s) — skipping.",
+                label,
+                format_pressure(level_hpa if level_hpa is not None else _DEFAULT_LEVEL_HPA),
+                [format_pressure(r.pressure) for r in refs],
+            )
+            return None
+        ref = refs[0]
+        data = extract_zonal_wind_from_store(
+            zio, label, [ref], sample=sample, target_latitude=target_latitude
+        )
+    if data is None or ref.pressure not in data["levels"]:
         return None
-    ch_data = data["channels"][channel]
+    lv = data["levels"][ref.pressure]
     return {
         "label": data["label"],
-        "channel": channel,
+        "ref": ref,
+        "pressure": ref.pressure,
+        "channel": ref.channel,
+        "stream": ref.stream,
         "sample": data["sample"],
-        "predictions": ch_data["predictions"],
-        "targets": ch_data["targets"],
+        "predictions": lv["predictions"],
+        "targets": lv["targets"],
         "datetimes": data["datetimes"],
     }
 
@@ -103,7 +139,9 @@ def extract_run(
 def load_experiment_group(
     group_cfg: dict[str, dict[str, Any]],
     data_dir: Path,
-    channel: str,
+    channel: str | None = None,
+    level_hpa: float | None = None,
+    target_latitude: float = 60.0,
 ) -> list[dict[str, Any]]:
     """
     Load all runs in one experiment group.
@@ -124,7 +162,14 @@ def load_experiment_group(
             _logger.warning("Zarr not found, skipping %s: %s", label, zarr_path)
             continue
 
-        run = extract_run(zarr_path, label, channel, sample=sample)
+        run = extract_run(
+            zarr_path,
+            label,
+            channel=channel,
+            level_hpa=level_hpa,
+            sample=sample,
+            target_latitude=target_latitude,
+        )
         if run is None:
             continue
 
@@ -142,14 +187,14 @@ def load_experiment_group(
 
 def ensemble_mean_std(
     runs: list[dict[str, Any]], key: str = "predictions"
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[NDArray, NDArray]:
     """Return (mean, std) over the ensemble dimension.
 
     Handles both:
     - multiple runs each with 1-D predictions ``(n_steps,)``
     - one (or more) runs with 2-D predictions ``(n_steps, n_ens)``
     """
-    members: list[np.ndarray] = []
+    members: list[NDArray] = []
     for r in runs:
         arr = np.asarray(r[key])
         if arr.ndim == 1:
@@ -180,9 +225,7 @@ def ssw_timing_error(run: dict[str, Any]) -> float | None:
     tgt_ssw = detect_ssw_reversal(run["targets"], run["datetimes"])
     if pred_ssw is None or tgt_ssw is None:
         return None
-    delta = (
-        pred_ssw["reversal_date"] - tgt_ssw["reversal_date"]
-    ).total_seconds() / 86400
+    delta = (pred_ssw["reversal_date"] - tgt_ssw["reversal_date"]).total_seconds() / 86400
     return float(delta)
 
 
@@ -229,28 +272,26 @@ def group_by_experiment_and_lead(
 def plot_timeseries_by_lead_time(
     lead_groups: dict[int, list[dict[str, Any]]],
     exp_label: str,
-    channel: str,
+    pressure_hpa: float,
     output_dir: Path,
+    latitude: float = 60.0,
 ) -> None:
     """Plot 1: one panel per lead time showing ensemble mean ± spread vs ERA5."""
-    level_label = _channel_label(channel)
+    level_label = format_pressure(pressure_hpa)
     lead_times = sorted(lead_groups.keys(), reverse=True)
     if not lead_times:
         return
 
-    fig, axes = plt.subplots(
-        len(lead_times), 1, figsize=(14, 4 * len(lead_times)), squeeze=False
-    )
+    fig, axes = plt.subplots(len(lead_times), 1, figsize=(14, 4 * len(lead_times)), squeeze=False)
     # adjust for ensemble dimension if present
-    for ax, lead in zip(axes.flatten(), lead_times):
+    for ax, lead in zip(axes.flatten(), lead_times, strict=True):
         runs = lead_groups[lead]
         mean_pred, std_pred = ensemble_mean_std(runs)
         datetimes = runs[0]["datetimes"]
         target = runs[0]["targets"]
-        color = runs[0].get("color") or "#377eb8"
+        color = runs[0].get("color") or _FALLBACK_COLORS[0]
         n_ens = sum(
-            np.asarray(r["predictions"]).shape[1] if np.asarray(r["predictions"]).ndim == 2
-            else 1
+            np.asarray(r["predictions"]).shape[1] if np.asarray(r["predictions"]).ndim == 2 else 1
             for r in runs
         )
 
@@ -262,9 +303,7 @@ def plot_timeseries_by_lead_time(
             alpha=0.25,
             label=f"Ensemble spread (n={n_ens})",
         )
-        ax.plot(
-            datetimes, mean_pred, color=color, lw=2.5, label="Prediction (ens. mean)"
-        )
+        ax.plot(datetimes, mean_pred, color=color, lw=2.5, label="Prediction (ens. mean)")
         ax.plot(datetimes, target, color="black", lw=2, ls="--", label="ERA5 target")
         ax.axhline(0, color="gray", ls=":", lw=1.5, alpha=0.7)
 
@@ -290,14 +329,16 @@ def plot_timeseries_by_lead_time(
 
     axes.flatten()[-1].set_xlabel("Date", fontsize=11)
     fig.suptitle(
-        f"{exp_label} — 60°N Zonal Mean U-wind at {level_label} by Lead Time",
+        f"{exp_label} — {latitude:g}°N Zonal Mean U-wind at {level_label} by Lead Time",
         fontsize=13,
         fontweight="bold",
         y=1.01,
     )
     plt.tight_layout()
 
-    out = output_dir / f"lead_time_series_{exp_label.replace(' ', '_')}_{channel}.png"
+    out = output_dir / (
+        f"lead_time_series_{exp_label.replace(' ', '_')}_{level_tag(pressure_hpa)}.png"
+    )
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     _logger.info("Saved %s", out)
@@ -305,7 +346,7 @@ def plot_timeseries_by_lead_time(
 
 def plot_timing_error(
     all_exp_metrics: dict[str, dict[int, dict[str, Any]]],
-    channel: str,
+    pressure_hpa: float,
     output_dir: Path,
 ) -> None:
     """Plot 2: SSW onset timing error (days) vs lead time, one series per experiment."""
@@ -314,11 +355,7 @@ def plot_timing_error(
 
     for i, (exp_label, metrics) in enumerate(all_exp_metrics.items()):
         color = _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)]
-        xs = [
-            lead
-            for lead, m in sorted(metrics.items())
-            if m.get("timing_error") is not None
-        ]
+        xs = [lead for lead, m in sorted(metrics.items()) if m.get("timing_error") is not None]
         ys = [metrics[lead]["timing_error"] for lead in xs]
         if not xs:
             continue
@@ -333,7 +370,7 @@ def plot_timing_error(
     ax.set_xlabel("Lead time (days before SSW)", fontsize=12)
     ax.set_ylabel("Timing error (days, positive = late)", fontsize=12)
     ax.set_title(
-        f"SSW Onset Timing Error vs Lead Time  [{channel}]",
+        f"SSW Onset Timing Error vs Lead Time  [{format_pressure(pressure_hpa)}]",
         fontsize=13,
         fontweight="bold",
     )
@@ -342,7 +379,7 @@ def plot_timing_error(
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
 
-    out = output_dir / f"ssw_timing_error_{channel}.png"
+    out = output_dir / f"ssw_timing_error_{level_tag(pressure_hpa)}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     _logger.info("Saved %s", out)
@@ -350,15 +387,13 @@ def plot_timing_error(
 
 def plot_rmse_and_spread(
     all_exp_metrics: dict[str, dict[int, dict[str, Any]]],
-    channel: str,
+    pressure_hpa: float,
     output_dir: Path,
 ) -> None:
     """Plot 3+4: RMSE and ensemble spread at SSW date vs lead time, grouped bar charts."""
-    level_label = _channel_label(channel)
+    level_label = format_pressure(pressure_hpa)
     exp_labels = list(all_exp_metrics.keys())
-    all_leads = sorted(
-        {lead for m in all_exp_metrics.values() for lead in m}, reverse=True
-    )
+    all_leads = sorted({lead for m in all_exp_metrics.values() for lead in m}, reverse=True)
     if not all_leads:
         return
 
@@ -372,28 +407,16 @@ def plot_rmse_and_spread(
         offset = (i - len(exp_labels) / 2 + 0.5) * width
 
         rmse_vals = [
-            all_exp_metrics[exp_label].get(lead, {}).get("rmse_at_ssw")
-            for lead in all_leads
+            all_exp_metrics[exp_label].get(lead, {}).get("rmse_at_ssw") for lead in all_leads
         ]
         spread_vals = [
-            all_exp_metrics[exp_label].get(lead, {}).get("spread_at_ssw")
-            for lead in all_leads
+            all_exp_metrics[exp_label].get(lead, {}).get("spread_at_ssw") for lead in all_leads
         ]
 
-        for ax, vals, title, ylabel in [
-            (ax_rmse, rmse_vals, f"RMSE at SSW date — {level_label}", "RMSE (m/s)"),
-            (
-                ax_spread,
-                spread_vals,
-                f"Ensemble spread at SSW date — {level_label}",
-                "Std dev (m/s)",
-            ),
-        ]:
+        for ax, vals in [(ax_rmse, rmse_vals), (ax_spread, spread_vals)]:
             clean = [v if v is not None else 0.0 for v in vals]
-            bars = ax.bar(
-                x + offset, clean, width, color=color, alpha=0.8, label=exp_label
-            )
-            for bar, v in zip(bars, vals):
+            bars = ax.bar(x + offset, clean, width, color=color, alpha=0.8, label=exp_label)
+            for bar, v in zip(bars, vals, strict=True):
                 if v is None:
                     bar.set_alpha(0.15)
 
@@ -411,7 +434,7 @@ def plot_rmse_and_spread(
     ax_rmse.legend(fontsize=9)
     plt.tight_layout()
 
-    out = output_dir / f"lead_time_skill_{channel}.png"
+    out = output_dir / f"lead_time_skill_{level_tag(pressure_hpa)}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     _logger.info("Saved %s", out)
@@ -435,7 +458,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--output-dir", type=Path, default=Path("plots/lead_time"))
     parser.add_argument(
-        "--channel", default="u_29", help="Channel to analyse (default: u_29 ≈ 10 hPa)"
+        "--level",
+        type=float,
+        default=_DEFAULT_LEVEL_HPA,
+        metavar="HPA",
+        help=(
+            "Pressure level (hPa) of the zonal-mean u-wind to analyse; the nearest "
+            "available level in any stream is used.  [default: 10]"
+        ),
+    )
+    parser.add_argument(
+        "--channel",
+        default=None,
+        help="Legacy alias: explicit channel name (e.g. u_29); overrides --level.",
     )
     parser.add_argument("--latitude", type=float, default=60.0)
     args = parser.parse_args(argv)
@@ -467,6 +502,9 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     all_exp_metrics: dict[str, dict[int, dict[str, Any]]] = {}
+    # Pressure used for titles/filenames: the requested --level, or (legacy
+    # --channel) the pressure it resolved to in the first loaded store.
+    pressure_hpa: float | None = None if args.channel else args.level
 
     for exp_label, lead_map in groups.items():
         _logger.info("─" * 50)
@@ -475,16 +513,24 @@ def main(argv: list[str] | None = None) -> None:
         lead_runs: dict[int, list[dict[str, Any]]] = {}
         for lead_days, label_specs in lead_map.items():
             _logger.info("  Lead time: T–%dd (%d entries)", lead_days, len(label_specs))
-            runs = load_experiment_group(label_specs, args.data_dir, args.channel)
+            runs = load_experiment_group(
+                label_specs,
+                args.data_dir,
+                channel=args.channel,
+                level_hpa=None if args.channel else args.level,
+                target_latitude=args.latitude,
+            )
             if runs:
                 lead_runs[lead_days] = runs
+                if pressure_hpa is None:
+                    pressure_hpa = runs[0]["pressure"]
 
         if not lead_runs:
             _logger.warning("No data loaded for %s, skipping.", exp_label)
             continue
 
         plot_timeseries_by_lead_time(
-            lead_runs, exp_label, args.channel, args.output_dir
+            lead_runs, exp_label, pressure_hpa, args.output_dir, latitude=args.latitude
         )
 
         exp_metrics: dict[int, dict[str, Any]] = {}
@@ -501,13 +547,9 @@ def main(argv: list[str] | None = None) -> None:
             }
             m["timing_error"] = ssw_timing_error(proxy)
 
-            spread_str = (
-                f"{m['spread_at_ssw']:.2f}" if m["spread_at_ssw"] is not None else "N/A"
-            )
+            spread_str = f"{m['spread_at_ssw']:.2f}" if m["spread_at_ssw"] is not None else "N/A"
             timing_str = (
-                f"{m['timing_error']:+.1f}d"
-                if m["timing_error"] is not None
-                else "not detected"
+                f"{m['timing_error']:+.1f}d" if m["timing_error"] is not None else "not detected"
             )
             _logger.info(
                 "  T–%dd: RMSE=%.2f m/s  spread=%s m/s  timing=%s",
@@ -520,8 +562,12 @@ def main(argv: list[str] | None = None) -> None:
 
         all_exp_metrics[exp_label] = exp_metrics
 
-    plot_timing_error(all_exp_metrics, args.channel, args.output_dir)
-    plot_rmse_and_spread(all_exp_metrics, args.channel, args.output_dir)
+    if pressure_hpa is None or not all_exp_metrics:
+        _logger.error("No runs loaded for any experiment group.")
+        return
+
+    plot_timing_error(all_exp_metrics, pressure_hpa, args.output_dir)
+    plot_rmse_and_spread(all_exp_metrics, pressure_hpa, args.output_dir)
 
     # Save metrics JSON
     def _serialise(obj: Any) -> Any:
@@ -533,7 +579,7 @@ def main(argv: list[str] | None = None) -> None:
             return int(obj)
         raise TypeError(f"Not serialisable: {type(obj)}")
 
-    metrics_file = args.output_dir / f"lead_time_metrics_{args.channel}.json"
+    metrics_file = args.output_dir / f"lead_time_metrics_{level_tag(pressure_hpa)}.json"
     with open(metrics_file, "w") as f:
         json.dump(all_exp_metrics, f, indent=2, default=_serialise)
     _logger.info("Saved metrics: %s", metrics_file)

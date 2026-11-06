@@ -28,7 +28,8 @@
 #   --climatology PATH   Climatology zarr for anomaly computation (optional)
 #   --ifs-file PATH      IFS S2S hindcast NetCDF, required for ifs-comparison
 #   --run SUBCMD...      Subcommands to run       [default: all except ifs-comparison]
-#   --polar-vortex-extra Extra args for polar-vortex (e.g. '--channels u_29 u_55')
+#   --polar-vortex-extra Extra args for polar-vortex (e.g. '--levels 10 50' in hPa;
+#                        legacy '--channels u_29 u_55' still works for ERA5ml stores)
 #   --dry-run            Print commands, do not execute
 #   --devel              Use develbooster partition (short jobs)
 #   --help               Show this help
@@ -89,7 +90,7 @@ done
 
 # Default: run everything except ifs-comparison (needs an external --ifs-file)
 if [[ ${#RUN_CMDS[@]} -eq 0 ]]; then
-    RUN_CMDS=(polar-vortex ssw-lead-times polar-maps vertical-structure polar-cap-temperature qg-tem precursors nam)
+    RUN_CMDS=(polar-vortex ssw-lead-times polar-maps vertical-structure polar-cap-temperature qg-tem precursors nam forecast-climatology coupling)
 fi
 
 # ---------------------------------------------------------------------------

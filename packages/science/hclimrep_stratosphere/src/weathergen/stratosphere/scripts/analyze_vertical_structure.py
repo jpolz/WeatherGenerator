@@ -16,6 +16,15 @@ Two output types are generated for each variable:
   1. Per-experiment 2×2 panel (abs prediction | abs target | pred anomaly | tgt anomaly).
   2. Multi-experiment 2-column comparison (pred anomaly | target anomaly per row).
 
+Multi-stream layout
+-------------------
+A forecast store may spread the atmospheric column over several streams
+(e.g. ``ERA5pl`` with 50–1000 hPa and ``S2Spredictors`` with 1–70 hPa, or a
+single legacy ``ERA5ml`` model-level stream).  The u and t columns are built
+with :func:`weathergen.stratosphere.io.discover_column`, which merges all
+streams into one pressure axis; by default every level between 1 and
+1000 hPa is used (the ``memory`` arm therefore only yields ≥ 50 hPa).
+
 Usage::
 
     ssw-analyze vertical-structure \\
@@ -27,7 +36,8 @@ Or as a module::
 
     python -m weathergen.stratosphere.scripts.analyze_vertical_structure \\
         --run-ids qq8xsoeh j7ns9146 \\
-        --data-dir ./data
+        --data-dir ./data \\
+        --levels 1 2 5 10 30 50 100 200 500 1000
 """
 
 from __future__ import annotations
@@ -42,33 +52,40 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import TwoSlopeNorm
+from numpy.typing import NDArray
+
 from weathergen.stratosphere.config import (
     event_reference_date,
     group_validations_by_event,
     load_validations_config,
 )
 from weathergen.stratosphere.io import (
+    ColumnIndex,
+    LevelRef,
     convert_times_to_datetime,
+    discover_column,
     find_latitude_indices,
     find_polar_cap_indices,
     get_area_weights,
-    get_channels,
     get_coords,
     get_forecast_steps,
-    load_step,
+    load_levels,
     open_validation,
     zarr_store_path,
 )
-from weathergen.stratosphere.levels import build_level_map
 
 _logger = logging.getLogger(__name__)
 
 # Default SSW reference date (Feb 2018 event)
 SSW_DATE = datetime(2018, 2, 12)
 
-# Standard pressure ticks for log-pressure y-axis
-_P_TICKS = [10, 30, 50, 100, 200, 300, 500, 700, 1000]
-_P_TICK_LABELS = [str(p) for p in _P_TICKS]
+# Default pressure range (hPa) of the cross-sections; every available level
+# of u / t in this range (across all streams) is used.
+_P_TOP_HPA = 1.0
+_P_BOTTOM_HPA = 1000.0
+
+# Standard pressure ticks for log-pressure y-axis (filtered to the data range)
+_P_TICKS = [1, 2, 5, 10, 30, 50, 100, 200, 300, 500, 700, 1000]
 
 
 # ---------------------------------------------------------------------------
@@ -81,12 +98,19 @@ def _configure_pressure_axis(
     datetimes: list[datetime],
     ssw_date: datetime = SSW_DATE,
     tick_interval_steps: int = 28,
+    pressures: NDArray | None = None,
 ) -> None:
     """Apply log-pressure y-axis formatting and date x-ticks to *ax*."""
-    ax.invert_yaxis()
     ax.set_yscale("log")
-    ax.set_yticks(_P_TICKS)
-    ax.set_yticklabels(_P_TICK_LABELS)
+    if pressures is not None and len(pressures):
+        p_top, p_bottom = float(np.min(pressures)), float(np.max(pressures))
+    else:
+        p_top, p_bottom = _P_TOP_HPA, _P_BOTTOM_HPA
+    ax.set_ylim(p_bottom, p_top)  # inverted: surface at the bottom
+    ticks = [p for p in _P_TICKS if p_top <= p <= p_bottom] or [p_top, p_bottom]
+    ax.set_yticks(ticks)
+    ax.set_yticklabels([f"{p:g}" for p in ticks])
+    ax.minorticks_off()
     ax.set_ylabel("Pressure (hPa)", fontsize=12)
     ax.grid(True, alpha=0.3, linestyle="--")
 
@@ -97,9 +121,7 @@ def _configure_pressure_axis(
     ax.set_xlabel("Date (MM-DD)", fontsize=12)
 
     if datetimes[0] <= ssw_date <= datetimes[-1]:
-        ssw_idx = int(
-            np.argmin([abs((dt - ssw_date).total_seconds()) for dt in datetimes])
-        )
+        ssw_idx = int(np.argmin([abs((dt - ssw_date).total_seconds()) for dt in datetimes]))
         ax.axvline(
             ssw_idx,
             color="red",
@@ -115,76 +137,133 @@ def _configure_pressure_axis(
 # ---------------------------------------------------------------------------
 
 
+def _select_column(
+    col: ColumnIndex,
+    label: str,
+    levels_hpa: list[float] | None,
+) -> list[LevelRef]:
+    """Levels of *col* to use: explicit ``--levels`` or all between 1 and 1000 hPa."""
+    if levels_hpa:
+        return sorted(col.select(levels_hpa), key=lambda r: r.pressure)
+    refs = col.between(_P_TOP_HPA, _P_BOTTOM_HPA)
+    dropped = [p for p in col.pressures if not (_P_TOP_HPA <= p <= _P_BOTTOM_HPA)]
+    if dropped:
+        _logger.info(
+            "%s: %s levels outside %g–%g hPa ignored: %s",
+            label,
+            col.variable,
+            _P_TOP_HPA,
+            _P_BOTTOM_HPA,
+            dropped,
+        )
+    return refs
+
+
+def _extract_column_means(
+    zio: Any,
+    refs: list[LevelRef],
+    sample: int,
+    reducer: str,
+    latitude: float,
+) -> tuple[NDArray, NDArray, list[datetime], dict[str, Any]]:
+    """
+    Reduce every level in *refs* (possibly spanning several streams) to one
+    value per forecast step.
+
+    ``reducer='zonal'`` averages all grid points within ±2.5° of *latitude*;
+    ``reducer='polar_cap'`` takes the area-weighted mean poleward of
+    *latitude*.  The ensemble dimension is averaged afterwards.
+
+    Returns ``(predictions, targets, datetimes, info)`` with
+    ``(n_steps, n_levels)`` arrays; *info* holds ``lat_indices`` and
+    ``weights`` of the first stream (used by the climatology lookup).
+    """
+    steps = get_forecast_steps(zio)
+    n_steps, n_levels = len(steps), len(refs)
+    predictions = np.zeros((n_steps, n_levels), dtype=np.float32)
+    targets = np.zeros((n_steps, n_levels), dtype=np.float32)
+
+    # Group by stream so each stream is read once per step and reduced with
+    # its own coordinates (grids may differ between streams).
+    by_stream: dict[str, list[tuple[int, LevelRef]]] = {}
+    for j, ref in enumerate(refs):
+        by_stream.setdefault(ref.stream, []).append((j, ref))
+
+    reducers: dict[str, tuple[NDArray, NDArray | None]] = {}
+    for stream in by_stream:
+        coords = get_coords(zio, stream, sample)
+        if reducer == "polar_cap":
+            idx = find_polar_cap_indices(coords, latitude)
+            reducers[stream] = (idx, get_area_weights(coords, idx))  # normalised
+        else:
+            reducers[stream] = (find_latitude_indices(coords, latitude), None)
+
+    raw_times: list[Any] = []
+    for i, step in enumerate(steps):
+        step_time = None
+        for stream, items in by_stream.items():
+            s_refs = [r for _, r in items]
+            pred, tgt, times = load_levels(zio, s_refs, step, sample)  # (pts, lev, ens)
+            step_time = times[0] if step_time is None else step_time
+            idx, weights = reducers[stream]
+            for k, (j, _) in enumerate(items):
+                if weights is None:
+                    predictions[i, j] = pred[idx, k, :].mean()
+                    targets[i, j] = tgt[idx, k, :].mean()
+                else:
+                    predictions[i, j] = (pred[idx, k, :] * weights[:, None]).sum(axis=0).mean()
+                    targets[i, j] = (tgt[idx, k, :] * weights[:, None]).sum(axis=0).mean()
+        raw_times.append(step_time)
+
+    datetimes = convert_times_to_datetime(np.array(raw_times))
+    first_idx, first_w = reducers[refs[0].stream]
+    return predictions, targets, datetimes, {"lat_indices": first_idx, "weights": first_w}
+
+
 def extract_vertical_profile(
     zarr_path: Path,
     label: str,
     target_latitude: float = 60.0,
     sample: int = 0,
+    levels_hpa: list[float] | None = None,
 ) -> dict[str, Any] | None:
     """
-    Extract zonal mean zonal wind at *target_latitude* across all ERA5ml
-    model levels for a height–time cross-section.
+    Extract zonal mean zonal wind at *target_latitude* across all available
+    u-wind levels (merged over streams, 1–1000 hPa by default) for a
+    height–time cross-section.
 
     Returns a dict with keys ``label``, ``predictions``, ``targets``,
-    ``datetimes``, ``pressures``, ``channels``; or ``None`` on error.
+    ``datetimes``, ``pressures``, ``channels``, ``refs``; or ``None`` when no
+    u-wind level is available.
     """
-    _logger.info(
-        "%s: extracting wind vertical profile (lat=%.1f°N)…", label, target_latitude
-    )
+    _logger.info("%s: extracting wind vertical profile (lat=%.1f°N)…", label, target_latitude)
 
     with open_validation(zarr_path) as zio:
-        if "ERA5ml" not in zio.streams:
+        col = discover_column(zio, "u", sample)
+        refs = _select_column(col, label, levels_hpa)
+        if not refs:
             _logger.warning(
-                "%s: ERA5ml not available (streams: %s) — skipping wind profile",
+                "%s: no u-wind levels in %g–%g hPa (streams: %s) — skipping wind profile",
                 label,
+                _P_TOP_HPA,
+                _P_BOTTOM_HPA,
                 list(zio.streams),
             )
             return None
 
-        stream = "ERA5ml"
-        channels = get_channels(zio, stream, sample)
-        coords = get_coords(zio, stream, sample)
+        predictions, targets, datetimes, info = _extract_column_means(
+            zio, refs, sample, "zonal", target_latitude
+        )
 
-        level_map = build_level_map("u", channels)
-        # Exclude levels with pressure ≤ 0 (top-of-atmosphere levels in L137)
-        # to avoid log(0) on the pressure axis.
-        level_map = {ch: p for ch, p in level_map.items() if p > 0.1}
-        if not level_map:
-            _logger.warning("%s: no u-wind channels found in ERA5ml — skipping", label)
-            return None
-
-        # Sort channels by ascending pressure (= descending altitude)
-        sorted_channels = sorted(level_map, key=lambda ch: level_map[ch])
-        ch_indices = [channels.index(ch) for ch in sorted_channels]
-        pressures = np.array([level_map[ch] for ch in sorted_channels])
-
-        lat_indices = find_latitude_indices(coords, target_latitude)
-        steps = get_forecast_steps(zio)
-
-        n_steps = len(steps)
-        n_levels = len(sorted_channels)
-        predictions = np.zeros((n_steps, n_levels), dtype=np.float32)
-        targets = np.zeros((n_steps, n_levels), dtype=np.float32)
-        raw_times: list[Any] = []
-
-        for i, step in enumerate(steps):
-            pred, tgt, times = load_step(zio, stream, step, sample)
-            # pred/tgt: (n_pts, n_channels) or (n_pts, n_channels, n_ens)
-            pred3 = np.atleast_3d(pred)  # (n_pts, n_ch, n_ens)
-            tgt3 = np.atleast_3d(tgt)
-            for j, ch_idx in enumerate(ch_indices):
-                predictions[i, j] = pred3[lat_indices, ch_idx, :].mean()
-                targets[i, j] = tgt3[lat_indices, ch_idx, :].mean()
-            raw_times.append(times[0])
-
-    datetimes = convert_times_to_datetime(np.array(raw_times))
+    pressures = np.array([r.pressure for r in refs])
     _logger.info(
-        "%s: %d steps × %d levels  (%.0f–%.0f hPa)",
+        "%s: %d steps × %d levels  (%g–%g hPa; streams %s)",
         label,
-        n_steps,
-        n_levels,
+        len(datetimes),
+        len(refs),
         pressures[0],
         pressures[-1],
+        sorted({r.stream for r in refs}),
     )
 
     return {
@@ -194,8 +273,9 @@ def extract_vertical_profile(
         "targets": targets,
         "datetimes": datetimes,
         "pressures": pressures,
-        "channels": sorted_channels,
-        "lat_indices": lat_indices,
+        "channels": [r.channel for r in refs],
+        "refs": refs,
+        "lat_indices": info["lat_indices"],
     }
 
 
@@ -204,13 +284,16 @@ def extract_temperature_vertical_profile(
     label: str,
     min_latitude: float = 60.0,
     sample: int = 0,
+    levels_hpa: list[float] | None = None,
 ) -> dict[str, Any] | None:
     """
-    Extract area-weighted polar-cap mean temperature across all ERA5ml model
-    levels for a height–time cross-section.
+    Extract area-weighted polar-cap mean temperature across all available
+    temperature levels (merged over streams, 1–1000 hPa by default) for a
+    height–time cross-section.
 
     Returns a dict with keys ``label``, ``predictions``, ``targets``,
-    ``datetimes``, ``pressures``, ``channels``; or ``None`` on error.
+    ``datetimes``, ``pressures``, ``channels``, ``refs``; or ``None`` when no
+    temperature level is available.
     """
     _logger.info(
         "%s: extracting temperature vertical profile (polar cap ≥%.1f°N)…",
@@ -219,68 +302,31 @@ def extract_temperature_vertical_profile(
     )
 
     with open_validation(zarr_path) as zio:
-        if "ERA5ml" not in zio.streams:
+        col = discover_column(zio, "t", sample)
+        refs = _select_column(col, label, levels_hpa)
+        if not refs:
             _logger.warning(
-                "%s: ERA5ml not available (streams: %s) — skipping temperature profile",
+                "%s: no temperature levels in %g–%g hPa (streams: %s) — skipping",
                 label,
+                _P_TOP_HPA,
+                _P_BOTTOM_HPA,
                 list(zio.streams),
             )
             return None
 
-        stream = "ERA5ml"
-        channels = get_channels(zio, stream, sample)
-        coords = get_coords(zio, stream, sample)
+        predictions, targets, datetimes, info = _extract_column_means(
+            zio, refs, sample, "polar_cap", min_latitude
+        )
 
-        level_map = build_level_map("t", channels)
-        # Exclude levels with pressure ≤ 0 (top-of-atmosphere levels in L137)
-        # to avoid log(0) on the pressure axis.
-        level_map = {ch: p for ch, p in level_map.items() if p > 0.1}
-        if not level_map:
-            _logger.warning(
-                "%s: no temperature channels found in ERA5ml — skipping", label
-            )
-            return None
-
-        sorted_channels = sorted(level_map, key=lambda ch: level_map[ch])
-        ch_indices = [channels.index(ch) for ch in sorted_channels]
-        pressures = np.array([level_map[ch] for ch in sorted_channels])
-
-        polar_indices = find_polar_cap_indices(coords, min_latitude)
-        weights = get_area_weights(coords, polar_indices)  # normalised
-        steps = get_forecast_steps(zio)
-
-        n_steps = len(steps)
-        n_levels = len(sorted_channels)
-        predictions = np.zeros((n_steps, n_levels), dtype=np.float32)
-        targets = np.zeros((n_steps, n_levels), dtype=np.float32)
-        raw_times: list[Any] = []
-
-        for i, step in enumerate(steps):
-            pred, tgt, times = load_step(zio, stream, step, sample)
-            pred3 = np.atleast_3d(pred)  # (n_pts, n_ch, n_ens)
-            tgt3 = np.atleast_3d(tgt)
-            for j, ch_idx in enumerate(ch_indices):
-                # Area-weighted polar-cap mean, then ensemble mean
-                predictions[i, j] = (
-                    (pred3[polar_indices, ch_idx, :] * weights[:, None])
-                    .sum(axis=0)
-                    .mean()
-                )
-                targets[i, j] = (
-                    (tgt3[polar_indices, ch_idx, :] * weights[:, None])
-                    .sum(axis=0)
-                    .mean()
-                )
-            raw_times.append(times[0])
-
-    datetimes = convert_times_to_datetime(np.array(raw_times))
+    pressures = np.array([r.pressure for r in refs])
     _logger.info(
-        "%s: %d steps × %d levels  (%.0f–%.0f hPa)",
+        "%s: %d steps × %d levels  (%g–%g hPa; streams %s)",
         label,
-        n_steps,
-        n_levels,
+        len(datetimes),
+        len(refs),
         pressures[0],
         pressures[-1],
+        sorted({r.stream for r in refs}),
     )
 
     return {
@@ -290,9 +336,10 @@ def extract_temperature_vertical_profile(
         "targets": targets,
         "datetimes": datetimes,
         "pressures": pressures,
-        "channels": sorted_channels,
-        "lat_indices": polar_indices,
-        "weights": weights,
+        "channels": [r.channel for r in refs],
+        "refs": refs,
+        "lat_indices": info["lat_indices"],
+        "weights": info["weights"],
     }
 
 
@@ -304,11 +351,11 @@ def extract_temperature_vertical_profile(
 def load_climatology_vertical_mean(
     climatology_path: Path,
     sorted_channels: list[str],
-    pressures: np.ndarray,
+    pressures: NDArray,
     datetimes: list[datetime],
-    lat_indices: np.ndarray,
-    weights: np.ndarray | None = None,
-) -> np.ndarray:
+    lat_indices: NDArray,
+    weights: NDArray | None = None,
+) -> NDArray:
     """
     Return climatological mean as a ``(time, level)`` array.
 
@@ -341,9 +388,9 @@ def load_climatology_vertical_mean(
     unique_t = sorted({t for t in time_indices if t >= 0})
     # clim.data: (time, channels, grid_points)
     clim_block = (
-        clim.data
-        .isel(time=unique_t, channels=ch_indices)
-        .values[:, :, lat_indices]  # (n_t, n_ch, n_pts)
+        clim.data.isel(time=unique_t, channels=ch_indices).values[
+            :, :, lat_indices
+        ]  # (n_t, n_ch, n_pts)
     )
     if weights is not None:
         # weighted mean over grid points
@@ -355,7 +402,7 @@ def load_climatology_vertical_mean(
     result = np.full((len(datetimes), len(sorted_channels)), np.nan, dtype=np.float64)
     for ti, t in enumerate(time_indices):
         if t >= 0:
-            result[ti, :len(ch_indices)] = zonal[t_pos[t], :]
+            result[ti, : len(ch_indices)] = zonal[t_pos[t], :]
     return result
 
 
@@ -365,12 +412,12 @@ def load_climatology_vertical_mean(
 
 
 def calculate_anomalies(
-    data: np.ndarray,
-    reference_data: np.ndarray | None = None,
+    data: NDArray,
+    reference_data: NDArray | None = None,
     reference_period: int = 40,
-    data_pressures: np.ndarray | None = None,
-    reference_pressures: np.ndarray | None = None,
-) -> np.ndarray:
+    data_pressures: NDArray | None = None,
+    reference_pressures: NDArray | None = None,
+) -> NDArray:
     """
     Compute anomalies relative to a reference mean.
 
@@ -401,17 +448,13 @@ def calculate_anomalies(
                 reference_mean = data[:reference_period].mean(axis=0, keepdims=True)
             else:
                 d_idx = np.array([np.where(data_pressures == p)[0][0] for p in common])
-                r_idx = np.array(
-                    [np.where(reference_pressures == p)[0][0] for p in common]
-                )
+                r_idx = np.array([np.where(reference_pressures == p)[0][0] for p in common])
                 reference_mean = data[:reference_period].mean(axis=0, keepdims=True)
-                reference_mean[:, d_idx] = reference_data[
-                    :reference_period, r_idx
-                ].mean(axis=0, keepdims=True)
+                reference_mean[:, d_idx] = reference_data[:reference_period, r_idx].mean(
+                    axis=0, keepdims=True
+                )
         else:
-            reference_mean = reference_data[:reference_period].mean(
-                axis=0, keepdims=True
-            )
+            reference_mean = reference_data[:reference_period].mean(axis=0, keepdims=True)
     else:
         reference_mean = data[:reference_period].mean(axis=0, keepdims=True)
 
@@ -425,10 +468,10 @@ def calculate_anomalies(
 
 def _contourf_panel(
     ax: Any,
-    T: np.ndarray,
-    P: np.ndarray,
-    field: np.ndarray,
-    levels: np.ndarray,
+    t_grid: NDArray,
+    p_grid: NDArray,
+    field: NDArray,
+    levels: NDArray,
     cmap: str,
     norm: Any,
     cb_label: str,
@@ -438,11 +481,11 @@ def _contourf_panel(
     ssw_date: datetime = SSW_DATE,
 ) -> None:
     """Render one contourf panel with consistent formatting."""
-    cf = ax.contourf(T, P, field.T, levels=levels, cmap=cmap, norm=norm, extend="both")
+    cf = ax.contourf(t_grid, p_grid, field.T, levels=levels, cmap=cmap, norm=norm, extend="both")
     if contour_levels is not None:
         cs = ax.contour(
-            T,
-            P,
+            t_grid,
+            p_grid,
             field.T,
             levels=contour_levels,
             colors="black",
@@ -452,7 +495,7 @@ def _contourf_panel(
         ax.clabel(cs, inline=True, fontsize=8)
     plt.colorbar(cf, ax=ax, label=cb_label)
     ax.set_title(title, fontsize=12, fontweight="bold")
-    _configure_pressure_axis(ax, datetimes, ssw_date)
+    _configure_pressure_axis(ax, datetimes, ssw_date, pressures=p_grid[:, 0])
 
 
 # ---------------------------------------------------------------------------
@@ -461,15 +504,15 @@ def _contourf_panel(
 
 
 def _compute_anomalies(
-    data: np.ndarray,
+    data: NDArray,
     datetimes: list[datetime],
-    pressures: np.ndarray,
+    pressures: NDArray,
     sorted_channels: list[str],
-    lat_indices: np.ndarray,
+    lat_indices: NDArray,
     climatology_path: Path | None,
-    weights: np.ndarray | None = None,
+    weights: NDArray | None = None,
     reference_dict: dict[str, Any] | None = None,
-) -> np.ndarray:
+) -> NDArray:
     """Subtract climatology (DOY+hour) if available, else fall back to initial-period mean."""
     if climatology_path is not None:
         clim_mean = load_climatology_vertical_mean(
@@ -506,15 +549,25 @@ def plot_vertical_structure(
         lat_indices = data["lat_indices"]
 
         pred_anom = _compute_anomalies(
-            predictions, datetimes, pressures, data["channels"],
-            lat_indices, climatology_path, reference_dict=reference_dict,
+            predictions,
+            datetimes,
+            pressures,
+            data["channels"],
+            lat_indices,
+            climatology_path,
+            reference_dict=reference_dict,
         )
         tgt_anom = _compute_anomalies(
-            targets, datetimes, pressures, data["channels"],
-            lat_indices, climatology_path, reference_dict=reference_dict,
+            targets,
+            datetimes,
+            pressures,
+            data["channels"],
+            lat_indices,
+            climatology_path,
+            reference_dict=reference_dict,
         )
 
-        T, P = np.meshgrid(np.arange(len(datetimes)), pressures)
+        t_grid, p_grid = np.meshgrid(np.arange(len(datetimes)), pressures)
 
         fig, axes = plt.subplots(2, 2, figsize=(18, 12))
 
@@ -530,8 +583,8 @@ def plot_vertical_structure(
         ):
             _contourf_panel(
                 ax,
-                T,
-                P,
+                t_grid,
+                p_grid,
                 field,
                 levels_abs,
                 "RdBu_r",
@@ -553,8 +606,8 @@ def plot_vertical_structure(
         ):
             _contourf_panel(
                 ax,
-                T,
-                P,
+                t_grid,
+                p_grid,
                 field,
                 levels_anom,
                 "RdBu_r",
@@ -600,15 +653,25 @@ def plot_downward_propagation(
         lat_indices = data["lat_indices"]
 
         pred_anom = _compute_anomalies(
-            data["predictions"], datetimes, pressures, data["channels"],
-            lat_indices, climatology_path, reference_dict=reference_dict,
+            data["predictions"],
+            datetimes,
+            pressures,
+            data["channels"],
+            lat_indices,
+            climatology_path,
+            reference_dict=reference_dict,
         )
         tgt_anom = _compute_anomalies(
-            data["targets"], datetimes, pressures, data["channels"],
-            lat_indices, climatology_path, reference_dict=reference_dict,
+            data["targets"],
+            datetimes,
+            pressures,
+            data["channels"],
+            lat_indices,
+            climatology_path,
+            reference_dict=reference_dict,
         )
 
-        T, P = np.meshgrid(np.arange(len(datetimes)), pressures)
+        t_grid, p_grid = np.meshgrid(np.arange(len(datetimes)), pressures)
 
         for ax, field, ttl in (
             (axes[idx, 0], pred_anom, f"{label} — Prediction"),
@@ -616,8 +679,8 @@ def plot_downward_propagation(
         ):
             _contourf_panel(
                 ax,
-                T,
-                P,
+                t_grid,
+                p_grid,
                 field,
                 levels_anom,
                 "RdBu_r",
@@ -629,9 +692,7 @@ def plot_downward_propagation(
                 ssw_date=ssw_date,
             )
 
-    fig.suptitle(
-        "Downward Propagation of SSW Wind Anomaly", fontsize=14, fontweight="bold"
-    )
+    fig.suptitle("Downward Propagation of SSW Wind Anomaly", fontsize=14, fontweight="bold")
     plt.tight_layout()
     out = output_dir / "downward_propagation_comparison.png"
     plt.savefig(out, dpi=300, bbox_inches="tight")
@@ -661,15 +722,27 @@ def plot_temperature_vertical_structure(
         weights = data.get("weights")
 
         pred_anom = _compute_anomalies(
-            predictions, datetimes, pressures, data["channels"],
-            polar_indices, climatology_path, weights=weights, reference_dict=reference_dict,
+            predictions,
+            datetimes,
+            pressures,
+            data["channels"],
+            polar_indices,
+            climatology_path,
+            weights=weights,
+            reference_dict=reference_dict,
         )
         tgt_anom = _compute_anomalies(
-            targets, datetimes, pressures, data["channels"],
-            polar_indices, climatology_path, weights=weights, reference_dict=reference_dict,
+            targets,
+            datetimes,
+            pressures,
+            data["channels"],
+            polar_indices,
+            climatology_path,
+            weights=weights,
+            reference_dict=reference_dict,
         )
 
-        T, P = np.meshgrid(np.arange(len(datetimes)), pressures)
+        t_grid, p_grid = np.meshgrid(np.arange(len(datetimes)), pressures)
 
         fig, axes = plt.subplots(2, 2, figsize=(18, 12))
 
@@ -682,8 +755,8 @@ def plot_temperature_vertical_structure(
         ):
             _contourf_panel(
                 ax,
-                T,
-                P,
+                t_grid,
+                p_grid,
                 field,
                 levels_abs,
                 "RdYlBu_r",
@@ -704,8 +777,8 @@ def plot_temperature_vertical_structure(
         ):
             _contourf_panel(
                 ax,
-                T,
-                P,
+                t_grid,
+                p_grid,
                 field,
                 levels_anom,
                 "RdBu_r",
@@ -751,13 +824,9 @@ def main(argv: list[str] | None = None) -> None:
     id_group.add_argument(
         "--run-ids", nargs="+", help="Validation IDs used as zarr path components."
     )
-    id_group.add_argument(
-        "--validations-config", type=Path, help="YAML validations config file."
-    )
+    id_group.add_argument("--validations-config", type=Path, help="YAML validations config file.")
 
-    parser.add_argument(
-        "--sample", type=int, default=0, help="Sample index (default: 0)."
-    )
+    parser.add_argument("--sample", type=int, default=0, help="Sample index (default: 0).")
     parser.add_argument(
         "--latitude",
         type=float,
@@ -769,6 +838,18 @@ def main(argv: list[str] | None = None) -> None:
         type=float,
         default=60.0,
         help="Minimum latitude for polar-cap temperature average (default: 60°N).",
+    )
+    parser.add_argument(
+        "--levels",
+        nargs="+",
+        type=float,
+        metavar="HPA",
+        default=None,
+        help=(
+            "Pressure levels (hPa) for the cross-sections; the nearest available "
+            "level of u / t in any stream is used, missing ones are skipped.  "
+            "[default: all levels between 1 and 1000 hPa]"
+        ),
     )
     parser.add_argument(
         "--reference-id",
@@ -798,7 +879,7 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         default=None,
         help="Path to climatology zarr for DOY+hour anomaly computation. "
-             "When omitted, falls back to the initial-period mean.",
+        "When omitted, falls back to the initial-period mean.",
     )
     parser.add_argument(
         "--ssw-date",
@@ -808,9 +889,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     # Resolve run specs, grouped by event so a config bundling several
     # real-world SSW events produces one set of plots per event instead of
@@ -854,7 +933,7 @@ def main(argv: list[str] | None = None) -> None:
             _logger.info("Extracting anomaly reference from %s…", args.reference_id)
             if not args.skip_wind:
                 ref_w = extract_vertical_profile(
-                    ref_zarr, args.reference_id, args.latitude, args.sample
+                    ref_zarr, args.reference_id, args.latitude, args.sample, args.levels
                 )
                 if ref_w is not None:
                     wind_reference = {
@@ -863,7 +942,7 @@ def main(argv: list[str] | None = None) -> None:
                     }
             if not args.skip_temperature:
                 ref_t = extract_temperature_vertical_profile(
-                    ref_zarr, args.reference_id, args.min_latitude, args.sample
+                    ref_zarr, args.reference_id, args.min_latitude, args.sample, args.levels
                 )
                 if ref_t is not None:
                     temp_reference = {
@@ -878,9 +957,7 @@ def main(argv: list[str] | None = None) -> None:
     # Extract profiles for all experiments, grouped by event
     single_event = len(event_groups) == 1
     for event_name, (run_specs, event_ssw_date) in event_groups.items():
-        event_output_dir = (
-            args.output_dir if single_event else args.output_dir / event_name
-        )
+        event_output_dir = args.output_dir if single_event else args.output_dir / event_name
         wind_data: list[dict[str, Any]] = []
         temp_data: list[dict[str, Any]] = []
 
@@ -891,33 +968,45 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             if not args.skip_wind:
                 d = extract_vertical_profile(
-                    zarr_path, spec["label"], args.latitude, spec["sample"]
+                    zarr_path, spec["label"], args.latitude, spec["sample"], args.levels
                 )
                 if d is not None:
                     wind_data.append(d)
             if not args.skip_temperature:
                 d = extract_temperature_vertical_profile(
-                    zarr_path, spec["label"], args.min_latitude, spec["sample"]
+                    zarr_path, spec["label"], args.min_latitude, spec["sample"], args.levels
                 )
                 if d is not None:
                     temp_data.append(d)
 
         # Generate plots
         if wind_data:
-            plot_vertical_structure(wind_data, event_output_dir, wind_reference,
-                                    ssw_date=event_ssw_date,
-                                    climatology_path=args.climatology)
+            plot_vertical_structure(
+                wind_data,
+                event_output_dir,
+                wind_reference,
+                ssw_date=event_ssw_date,
+                climatology_path=args.climatology,
+            )
             if len(wind_data) > 1:
-                plot_downward_propagation(wind_data, event_output_dir, wind_reference,
-                                          ssw_date=event_ssw_date,
-                                          climatology_path=args.climatology)
+                plot_downward_propagation(
+                    wind_data,
+                    event_output_dir,
+                    wind_reference,
+                    ssw_date=event_ssw_date,
+                    climatology_path=args.climatology,
+                )
         elif not args.skip_wind:
             _logger.warning("[%s] No wind data extracted.", event_name)
 
         if temp_data:
-            plot_temperature_vertical_structure(temp_data, event_output_dir, temp_reference,
-                                                ssw_date=event_ssw_date,
-                                                climatology_path=args.climatology)
+            plot_temperature_vertical_structure(
+                temp_data,
+                event_output_dir,
+                temp_reference,
+                ssw_date=event_ssw_date,
+                climatology_path=args.climatology,
+            )
         elif not args.skip_temperature:
             _logger.warning("[%s] No temperature data extracted.", event_name)
 

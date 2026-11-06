@@ -5,15 +5,19 @@
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
 
 """
-Coarse 3-level Northern Annular Mode (NAM) index.
+Multi-level Northern Annular Mode (NAM) index.
 
-Computes a leading-EOF NAM/AO-style index at each of the three ERA5pl
-pressure levels available in the ``era5_strato_final`` stream
-(50 / 500 / 850 hPa), using ``z_50``, ``z_500``, ``z_850`` geopotential.
+Computes a leading-EOF NAM/AO-style index of geopotential anomalies poleward
+of ``--min-lat`` at each requested pressure level (default 10, 50, 100, 500
+and 1000 hPa), one independent time series per level (one panel each).
 
-This is deliberately a coarse proxy, NOT a full stratospheric NAM: with only
-3 pressure levels there is no continuous height-time cross-section, just
-three independent per-level time series (one panel each).
+Multi-stream layout: a forecast store may hold several streams, e.g.
+``ERA5pl`` (z at 50–1000 hPa) and ``S2Spredictors`` (z at 1–70 hPa). Levels
+are addressed in hPa and located with
+:func:`weathergen.stratosphere.io.discover_column`, which merges all streams
+into one pressure axis, so 10 hPa (S2Spredictors) and 500 hPa (ERA5pl) are
+handled uniformly. Levels that are not available in a store (e.g. 10 hPa in
+the ``memory`` arm) are skipped with a warning.
 
 Anomalies are computed either against an external climatology zarr store
 (``--climatology``, matched by day-of-year + hour, as in
@@ -26,7 +30,8 @@ Usage::
     ssw-analyze nam \\
         --validations-config config/evaluate/ssw_feb2018.yml \\
         --data-dir results \\
-        --output-dir plots/nam
+        --output-dir plots/nam \\
+        --levels 10 50 100 500 1000
 
 Or as a module::
 
@@ -46,30 +51,35 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
+
 from weathergen.stratosphere.config import (
     event_reference_date,
     group_validations_by_event,
     load_validations_config,
 )
 from weathergen.stratosphere.diagnostics import (
-    nam_index_eof_reference,
     nam_index_eof_project,
+    nam_index_eof_reference,
 )
 from weathergen.stratosphere.io import (
+    LevelRef,
     convert_times_to_datetime,
     find_polar_cap_indices,
-    get_channels,
     get_coords,
     get_forecast_steps,
-    load_step,
+    load_level,
     open_validation,
+    resolve_channel_arg,
     zarr_store_path,
 )
+from weathergen.stratosphere.levels import format_pressure
 
 _logger = logging.getLogger(__name__)
 
-# The only 3 pressure levels available in the era5_strato_final ERA5pl stream.
-_NAM_LEVELS = [50, 500, 850]
+# Default pressure levels (hPa) for the per-level NAM index; missing levels
+# are skipped.
+_DEFAULT_NAM_LEVELS = [10.0, 50.0, 100.0, 500.0, 1000.0]
 
 # Default EOF domain: poleward of this latitude.
 _DEFAULT_MIN_LAT = 20.0
@@ -88,8 +98,8 @@ def load_climatology_domain_field(
     climatology_path: Path,
     channel: str,
     datetimes: list[datetime],
-    domain_indices: np.ndarray,
-) -> np.ndarray | None:
+    domain_indices: NDArray,
+) -> NDArray | None:
     """
     Load per-point climatology values for *channel* at *domain_indices*,
     matched to *datetimes* by day-of-year + hour (as in
@@ -143,66 +153,77 @@ def extract_nam(
     sample: int = 0,
     min_lat: float = _DEFAULT_MIN_LAT,
     climatology_path: Path | None = None,
+    levels_hpa: list[float] | None = None,
+    channels: list[str] | None = None,
     lead_days: int = 0,
     color: str = "C0",
     ssw_date: datetime = SSW_DATE,
 ) -> dict[str, Any] | None:
     """
-    Extract the coarse 3-level NAM index for one validation run.
+    Extract the per-level NAM index for one validation run.
+
+    *levels_hpa* (hPa) or legacy *channels* (channel names) select the
+    geopotential levels; defaults to :data:`_DEFAULT_NAM_LEVELS`, skipping
+    levels that are not present in any stream.
 
     Returns a dict with keys ``label``, ``lead_days``, ``color``,
-    ``datetimes``, ``days_rel``, and ``pred``/``tgt`` dicts mapping each
-    available level (int) to its ``(n_time,)`` NAM index; or ``None`` on
-    failure.
+    ``datetimes``, ``days_rel``, ``levels`` (sorted pressures, hPa) and
+    ``pred``/``tgt`` dicts mapping each available pressure (float, hPa) to
+    its ``(n_time,)`` NAM index; or ``None`` on failure.
     """
     with open_validation(zarr_path) as zio:
-        if "ERA5pl" not in zio.streams:
-            _logger.warning("%s: ERA5pl stream not present — skipping NAM", label)
-            return None
-
-        channels = get_channels(zio, "ERA5pl", sample)
-        coords = get_coords(zio, "ERA5pl", sample)
-        domain_idx = find_polar_cap_indices(coords, min_lat, "north")
-        domain_coords = coords[domain_idx]
-
-        levels = [lv for lv in _NAM_LEVELS if f"z_{lv}" in channels]
-        if not levels:
-            _logger.warning(
-                "%s: none of z_%s found in ERA5pl (available z channels: %s)",
-                label,
-                _NAM_LEVELS,
-                [c for c in channels if c.startswith("z_")],
+        try:
+            refs: list[LevelRef] = resolve_channel_arg(
+                zio, "z", channels, levels_hpa, _DEFAULT_NAM_LEVELS, sample
             )
+        except KeyError as e:
+            _logger.warning("%s: %s — skipping NAM", label, e)
             return None
+        if not refs:
+            _logger.warning("%s: no geopotential levels found in any stream — skipping", label)
+            return None
+        refs = sorted(refs, key=lambda r: r.pressure)
+        levels = [r.pressure for r in refs]
 
-        ch_idx = {lv: channels.index(f"z_{lv}") for lv in levels}
+        # Domain (polar cap poleward of min_lat) per stream; grids may differ.
+        domain: dict[str, tuple[NDArray, NDArray, NDArray]] = {}
+        for ref in refs:
+            if ref.stream not in domain:
+                # float64: in float32 cos(90°) is slightly negative, which
+                # would give NaN sqrt-weights in the EOF for a polar point.
+                coords = get_coords(zio, ref.stream, sample).astype(np.float64)
+                idx = find_polar_cap_indices(coords, min_lat, "north")
+                domain[ref.stream] = (coords, idx, coords[idx])
+
         steps = get_forecast_steps(zio, skip_source_step=True)
 
-        pred_fields: dict[int, list[np.ndarray]] = {lv: [] for lv in levels}
-        tgt_fields: dict[int, list[np.ndarray]] = {lv: [] for lv in levels}
+        pred_fields: dict[float, list[NDArray]] = {lv: [] for lv in levels}
+        tgt_fields: dict[float, list[NDArray]] = {lv: [] for lv in levels}
         raw_times: list = []
 
         for step in steps:
-            pred, tgt, times = load_step(zio, "ERA5pl", step, sample)
-            pred = np.atleast_3d(pred)
-            tgt = np.atleast_3d(tgt)
-            for lv in levels:
-                pred_fields[lv].append(pred[domain_idx, ch_idx[lv], 0].astype(np.float64))
-                tgt_fields[lv].append(tgt[domain_idx, ch_idx[lv], 0].astype(np.float64))
+            times = None
+            for ref in refs:
+                pred, tgt, times = load_level(zio, ref, step, sample)
+                _, idx, _ = domain[ref.stream]
+                pred_fields[ref.pressure].append(pred[idx, 0].astype(np.float64))
+                tgt_fields[ref.pressure].append(tgt[idx, 0].astype(np.float64))
             raw_times.append(times[0])
 
     datetimes = convert_times_to_datetime(np.array(raw_times))
 
-    pred_nam: dict[int, np.ndarray] = {}
-    tgt_nam: dict[int, np.ndarray] = {}
-    for lv in levels:
+    pred_nam: dict[float, NDArray] = {}
+    tgt_nam: dict[float, NDArray] = {}
+    for ref in refs:
+        lv = ref.pressure
+        coords, domain_idx, domain_coords = domain[ref.stream]
         pred_arr = np.stack(pred_fields[lv])  # (n_time, n_domain)
         tgt_arr = np.stack(tgt_fields[lv])
 
         clim = None
         if climatology_path is not None:
             clim = load_climatology_domain_field(
-                climatology_path, f"z_{lv}", datetimes, domain_idx
+                climatology_path, ref.channel, datetimes, domain_idx
             )
         if clim is not None:
             pred_anom = pred_arr - clim
@@ -239,7 +260,7 @@ def extract_nam(
         dtype=np.float64,
     )
 
-    _logger.info("%s: computed NAM index for levels %s", label, levels)
+    _logger.info("%s: computed NAM index at %s", label, [format_pressure(lv) for lv in levels])
 
     return {
         "label": label,
@@ -264,7 +285,7 @@ def plot_nam(
     ssw_date: datetime = SSW_DATE,
 ) -> None:
     """
-    One panel per available pressure level; each panel shows the NAM index
+    One panel per available pressure level (hPa); each panel shows the NAM index
     time series (predictions colored by lead time, ERA5 target in black),
     x-axis = days relative to *ssw_date*.
     """
@@ -283,7 +304,7 @@ def plot_nam(
     axes = np.atleast_1d(axes)
     data_sorted = sorted(data_list, key=lambda d: d["days_rel"][0])
 
-    for ax, lv in zip(axes, all_levels):
+    for ax, lv in zip(axes, all_levels, strict=True):
         era5_drawn = False
         for data in data_sorted:
             if lv not in data["pred"]:
@@ -321,14 +342,15 @@ def plot_nam(
                 label="SSW onset (day 0)",
             )
         ax.axhline(0.0, color="k", linewidth=0.8, alpha=0.4)
-        ax.set_ylabel(f"NAM index (z_{lv})", fontsize=11)
+        ax.set_ylabel(f"NAM index (z {format_pressure(lv)})", fontsize=11)
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best", fontsize=7, ncol=4)
 
     axes[-1].set_xlabel("Days relative to SSW onset", fontsize=12)
     fig.suptitle(
-        "Coarse 3-level NAM index (50/500/850 hPa proxy, not a full "
-        "stratospheric NAM)",
+        "NAM index by pressure level (leading EOF of z anomalies, "
+        + "/".join(f"{lv:g}" for lv in all_levels)
+        + " hPa)",
         fontsize=13,
         fontweight="bold",
     )
@@ -353,8 +375,8 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Coarse 3-level (50/500/850 hPa) NAM index — NOT a full "
-            "stratospheric NAM, limited by ERA5pl's available levels."
+            "Per-level NAM index (leading EOF of geopotential anomalies "
+            "poleward of --min-lat) at the requested pressure levels."
         )
     )
     parser.add_argument(
@@ -382,6 +404,24 @@ def main(argv: list[str] | None = None) -> None:
         help="Southern boundary of the EOF domain (°N).  [default: 20]",
     )
     parser.add_argument(
+        "--levels",
+        type=float,
+        nargs="+",
+        metavar="HPA",
+        default=None,
+        help=(
+            "Pressure levels (hPa) of geopotential for the NAM index; levels "
+            "missing from the store are skipped.  "
+            f"[default: {' '.join(f'{lv:g}' for lv in _DEFAULT_NAM_LEVELS)}]"
+        ),
+    )
+    parser.add_argument(
+        "--channels",
+        nargs="+",
+        default=None,
+        help="Legacy alias for --levels: explicit z channel names (e.g. z_500).",
+    )
+    parser.add_argument(
         "--climatology",
         type=Path,
         default=None,
@@ -399,9 +439,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    print("=" * 60)
-    print("COARSE 3-LEVEL NAM INDEX")
-    print("=" * 60)
+    _logger.info("=== NAM INDEX BY PRESSURE LEVEL ===")
 
     cfg = load_validations_config(args.validations_config)
     events = group_validations_by_event(cfg)
@@ -409,9 +447,7 @@ def main(argv: list[str] | None = None) -> None:
 
     for event_name, event_cfg in events.items():
         event_ssw_date = event_reference_date(event_cfg, args.ssw_date)
-        event_output_dir = (
-            args.output_dir if single_event else args.output_dir / event_name
-        )
+        event_output_dir = args.output_dir if single_event else args.output_dir / event_name
 
         run_specs = [
             (
@@ -438,6 +474,8 @@ def main(argv: list[str] | None = None) -> None:
                 sample,
                 min_lat=args.min_lat,
                 climatology_path=args.climatology,
+                levels_hpa=args.levels,
+                channels=args.channels,
                 lead_days=lead_days,
                 color=color,
                 ssw_date=event_ssw_date,
@@ -453,7 +491,7 @@ def main(argv: list[str] | None = None) -> None:
 
         plot_nam(data_list, event_output_dir, event_ssw_date)
 
-    print("Analysis complete.")
+    _logger.info("Analysis complete.")
 
 
 if __name__ == "__main__":

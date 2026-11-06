@@ -9,9 +9,21 @@ Polar Map Animations and Surface Impact Analysis for SSW Events.
 
 Creates:
   1. Animated North Polar Stereographic maps of stratospheric u-wind and
-     temperature (ERA5 Target | Prediction | Pred − Target per row).
-  2. Time series of a surface/tropospheric variable showing
+     temperature at one pressure level (ERA5 Target | Prediction |
+     Pred − Target per row).
+  2. Time series (zonal mean at 60°N) of one variable showing
      stratosphere-troposphere coupling after the SSW onset.
+
+Multi-stream layout
+-------------------
+A strato_s2s forecast store spreads the atmospheric column over several
+streams (``ERA5pl``: surface + 50–1000 hPa, ``S2Spredictors``: 1–70 hPa;
+channel suffix = hPa).  Levels are therefore requested in **hPa**
+(``--level 10``) and located with ``discover_column(...).nearest(p)``, which
+merges all streams.  ``--variable`` accepts surface names (``2t``, ``msl``,
+``10u``) or ``<var>_<hPa>`` (``u_10``, ``t_850``); on legacy single-stream
+ERA5ml stores pass ``--level-type model`` so that ``u_29`` is read as L137
+model level 29 (≈ 10 hPa).
 
 Requires ``ffmpeg`` on PATH for animation output.
 
@@ -20,19 +32,21 @@ Usage::
     ssw-analyze polar-maps \\
         --validations-config eval_config/ssw_feb2018.yml \\
         --data-dir /path/to/validation/data \\
-        --output-dir plots/polar_maps
+        --output-dir plots/polar_maps \\
+        --level 10 --variable u_10
 
 Or as a module::
 
     python -m weathergen.stratosphere.scripts.analyze_polar_maps \\
         --run-ids qq8xsoeh j7ns9146 \\
-        --data-dir ./data
+        --data-dir ./data --level 50 --variable 2t
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -53,14 +67,23 @@ except ImportError:
 
 from weathergen.stratosphere.config import load_validations_config
 from weathergen.stratosphere.io import (
+    LevelRef,
     convert_times_to_datetime,
+    discover_column,
     find_latitude_indices,
-    get_channels,
     get_coords,
     get_forecast_steps,
-    load_step,
+    load_level,
     open_validation,
+    surface_channel_ref,
     zarr_store_path,
+)
+from weathergen.stratosphere.levels import (
+    SURFACE_CHANNELS,
+    LevelType,
+    channel_pressure,
+    format_pressure,
+    parse_channel,
 )
 
 _logger = logging.getLogger(__name__)
@@ -68,41 +91,81 @@ _logger = logging.getLogger(__name__)
 # Default SSW reference date (Feb 2018 event)
 SSW_DATE = datetime(2018, 2, 12)
 
+# Default pressure level (hPa) for the polar maps and the 60°N time series.
+DEFAULT_LEVEL_HPA = 10.0
+DEFAULT_VARIABLE = "u_10"
+
 
 # ---------------------------------------------------------------------------
-# Stream selection helper
+# Variable / level resolution
 # ---------------------------------------------------------------------------
 
 
-def _stream_for_variable(zio: Any, variable: str) -> str | None:
-    """Return the appropriate stream name for *variable*, or ``None`` if absent.
+def _level_tag(ref: LevelRef) -> str:
+    """Filename-safe label: ``'u10hPa'`` for levels, ``'2t'`` for surface channels."""
+    if np.isnan(ref.pressure):
+        return ref.channel
+    return f"{ref.variable}{ref.pressure:.3g}hPa"
 
-    ERA5pl pressure-level variables (``z_500``, ``t_850``, etc.) live in
-    ``ERA5pl``; surface variables (``2t``, ``10u``, ``10v``) and model-level
-    variables (``u_29``, ``t_55``, etc.) live in ``ERA5ml``.
 
-    The preferred stream is tried first; if absent, the other stream is tried
-    so that ERA5ml-only validations still work when an ERA5pl variable is
-    requested (e.g. ``u_29`` misidentified as pressure-level).
+def _level_title(ref: LevelRef) -> str:
+    """Human-readable label: ``'u 10 hPa (S2Spredictors/u_10)'``."""
+    if np.isnan(ref.pressure):
+        return f"{ref.channel} ({ref.stream})"
+    return f"{ref.variable} {ref.pressure:.3g} hPa ({ref.stream}/{ref.channel})"
+
+
+def _resolve_variable(
+    zio: Any,
+    variable: str,
+    level_type: LevelType = "pressure",
+    sample: int = 0,
+) -> LevelRef | None:
     """
-    need_pl = variable.startswith(("z_", "t_", "u_", "v_")) and variable not in (
-        "2t",
-        "10u",
-        "10v",
-    )
-    prefer = "ERA5pl" if need_pl else "ERA5ml"
-    fallback = "ERA5ml" if need_pl else "ERA5pl"
-    if prefer in zio.streams:
-        return prefer
-    if fallback in zio.streams:
-        _logger.debug(
-            "'%s' preferred stream %s absent; falling back to %s",
-            variable,
-            prefer,
-            fallback,
-        )
-        return fallback
-    return None
+    Locate *variable* in the store.
+
+    Surface names (``2t``, ``msl``, ``10u`` — anything without a numeric
+    suffix or listed in ``SURFACE_CHANNELS``) are looked up directly in every
+    stream.  ``<var>_<n>`` names are interpreted by *level_type*: the suffix
+    is hPa (default) or an L137 model level (``--level-type model``,
+    ``u_29`` → 9.8 hPa) and the nearest available level of ``var`` across
+    all streams is returned.  ``None`` (with a warning) if nothing matches.
+    """
+    var, lv = parse_channel(variable)
+    if lv is None or variable in SURFACE_CHANNELS:
+        ref = surface_channel_ref(zio, variable, sample)
+        if ref is None:
+            _logger.warning("surface channel %r not found in streams %s", variable, zio.streams)
+        return ref
+
+    p = channel_pressure(variable, level_type)
+    if p is None:
+        _logger.warning("%r: cannot convert level %s (%s levels) to hPa", variable, lv, level_type)
+        return None
+    col = discover_column(zio, var, sample)
+    try:
+        ref = col.nearest(p)
+    except KeyError as e:
+        _logger.warning("%r (%s): %s", variable, format_pressure(p), e)
+        return None
+    if abs(ref.pressure - p) / p > 0.02:
+        _logger.info("%r → using %s", variable, _level_title(ref))
+    return ref
+
+
+def _resolve_level(
+    zio: Any, variable: str, pressure_hpa: float, sample: int = 0
+) -> LevelRef | None:
+    """Nearest level of *variable* to *pressure_hpa* across all streams, or ``None``."""
+    col = discover_column(zio, variable, sample)
+    if not col:
+        _logger.warning("no %s levels in streams %s", variable, zio.streams)
+        return None
+    try:
+        return col.nearest(pressure_hpa)
+    except KeyError as e:
+        _logger.warning("%s", e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -110,70 +173,51 @@ def _stream_for_variable(zio: Any, variable: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _load_series(zio: Any, ref: LevelRef, sample: int) -> tuple[Any, Any, list[Any]]:
+    """Ensemble-mean prediction / target ``(n_steps, n_pts)`` of one level."""
+    steps = get_forecast_steps(zio)
+    preds, tgts, raw_times = [], [], []
+    for step in steps:
+        pred, tgt, times = load_level(zio, ref, step, sample)
+        preds.append(np.asarray(pred, dtype=np.float32).mean(axis=-1))
+        tgts.append(np.asarray(tgt, dtype=np.float32).mean(axis=-1))
+        raw_times.append(times[0])
+    return np.stack(preds), np.stack(tgts), raw_times
+
+
 def extract_polar_maps(
     zarr_path: Path,
     label: str,
-    model_level: int = 55,
+    pressure_hpa: float = DEFAULT_LEVEL_HPA,
     variable: str = "u",
     sample: int = 0,
 ) -> dict[str, Any] | None:
     """
-    Extract ERA5ml model-level data for polar map animation.
+    Extract one level of *variable* for the polar map animation.
 
     Returns a dict with keys ``label``, ``predictions``, ``targets``,
-    ``coords``, ``datetimes``, ``channel``, ``model_level``; or ``None``
-    on error.
+    ``coords``, ``datetimes``, ``channel``, ``pressure``, ``tag``,
+    ``title``; or ``None`` when the level is missing.
 
     Args:
-        zarr_path:   Path to the validation zarr store.
-        label:       Display label (e.g. validation config key).
-        model_level: Model level number (30 ≈ 12 hPa, 55 ≈ 77 hPa).
-        variable:    Variable letter: ``'u'``, ``'t'``, ``'v'``, or ``'z'``.
-        sample:      Sample index.
+        zarr_path:    Path to the validation zarr store.
+        label:        Display label (e.g. validation config key).
+        pressure_hpa: Requested pressure (hPa); the nearest available level
+                      of *variable* in any stream is used.
+        variable:     Variable letter: ``'u'``, ``'t'``, ``'v'``, or ``'z'``.
+        sample:       Sample index.
     """
-    target_channel = f"{variable}_{model_level}"
-    _logger.info("%s: extracting %s from ERA5ml…", label, target_channel)
-
     with open_validation(zarr_path) as zio:
-        if "ERA5ml" not in zio.streams:
-            _logger.warning(
-                "%s: ERA5ml stream not available (streams: %s)", label, zio.streams
-            )
+        ref = _resolve_level(zio, variable, pressure_hpa, sample)
+        if ref is None:
+            _logger.warning("%s: no %s level near %s — skipping", label, variable, pressure_hpa)
             return None
-
-        stream = "ERA5ml"
-        channels = get_channels(zio, stream, sample)
-        if target_channel not in channels:
-            avail = [c for c in channels if c.startswith(variable + "_")][:10]
-            _logger.warning(
-                "%s: channel %s not found — available %s channels: %s…",
-                label,
-                target_channel,
-                variable,
-                avail,
-            )
-            return None
-
-        ch_idx = channels.index(target_channel)
-        coords = get_coords(zio, stream, sample)  # (n_pts, 2): [lat, lon]
-        steps = get_forecast_steps(zio)
-
-        n_steps = len(steps)
-        n_pts = coords.shape[0]
-        predictions = np.zeros((n_steps, n_pts), dtype=np.float32)
-        targets = np.zeros((n_steps, n_pts), dtype=np.float32)
-        raw_times: list[Any] = []
-
-        for i, step in enumerate(steps):
-            pred, tgt, times = load_step(zio, stream, step, sample)
-            # pred: (n_pts, n_channels, n_ens) or (n_pts, n_channels) → ensemble mean
-            # tgt:  same shape but ERA5 often has no ens dim → use mean(axis=-1) safely
-            predictions[i] = np.atleast_3d(pred)[:, ch_idx, :].mean(axis=-1)
-            targets[i] = np.atleast_3d(tgt)[:, ch_idx, :].mean(axis=-1)
-            raw_times.append(times[0])
+        _logger.info("%s: extracting %s…", label, _level_title(ref))
+        coords = get_coords(zio, ref.stream, sample)  # (n_pts, 2): [lat, lon]
+        predictions, targets, raw_times = _load_series(zio, ref, sample)
 
     datetimes = convert_times_to_datetime(np.array(raw_times))
-    _logger.info("%s: %d frames  %s → %s", label, n_steps, datetimes[0], datetimes[-1])
+    _logger.info("%s: %d frames  %s → %s", label, len(datetimes), datetimes[0], datetimes[-1])
 
     return {
         "label": label,
@@ -181,82 +225,61 @@ def extract_polar_maps(
         "targets": targets,
         "coords": coords,
         "datetimes": datetimes,
-        "channel": target_channel,
-        "model_level": model_level,
+        "channel": ref.channel,
+        "pressure": ref.pressure,
+        "tag": _level_tag(ref),
+        "title": _level_title(ref),
     }
 
 
 def extract_surface_variable(
     zarr_path: Path,
     label: str,
-    variable: str = "z_500",
+    variable: str = DEFAULT_VARIABLE,
     target_latitude: float = 60.0,
     sample: int = 0,
+    level_type: LevelType = "pressure",
 ) -> dict[str, Any] | None:
     """
-    Extract the zonal mean of a surface or tropospheric variable.
+    Extract the zonal mean of one variable at *target_latitude*.
 
     Args:
         zarr_path:        Path to the validation zarr store.
         label:            Display label.
-        variable:         Channel name (e.g. ``'z_500'``, ``'2t'``, ``'10u'``).
+        variable:         Surface channel (``'2t'``, ``'msl'``, ``'10u'``) or
+                          ``<var>_<level>`` (``'u_10'``, ``'t_850'``).
         target_latitude:  Latitude for the zonal mean (default 60°N).
         sample:           Sample index.
+        level_type:       How to read the numeric suffix of *variable*:
+                          ``'pressure'`` (hPa) or ``'model'`` (L137 level).
 
     Returns:
         Dict with ``label``, ``predictions``, ``targets``, ``datetimes``,
-        ``channel``; or ``None`` on error.
+        ``channel``, ``tag``, ``title``; or ``None`` when unavailable.
     """
-    _logger.info("%s: extracting %s…", label, variable)
-
     with open_validation(zarr_path) as zio:
-        stream = _stream_for_variable(zio, variable)
-        if stream is None:
-            _logger.warning(
-                "%s: required stream for %s not found (available: %s)",
-                label,
-                variable,
-                list(zio.streams),
-            )
+        ref = _resolve_variable(zio, variable, level_type, sample)
+        if ref is None:
+            _logger.warning("%s: %s not available — skipping", label, variable)
             return None
-
-        channels = get_channels(zio, stream, sample)
-        if variable not in channels:
-            _logger.warning(
-                "%s: %s not found in %s — available: %s…",
-                label,
-                variable,
-                stream,
-                channels[:20],
-            )
-            return None
-
-        ch_idx = channels.index(variable)
-        coords = get_coords(zio, stream, sample)
+        _logger.info("%s: extracting %s…", label, _level_title(ref))
+        coords = get_coords(zio, ref.stream, sample)
         lat_indices = find_latitude_indices(coords, target_latitude)
-        steps = get_forecast_steps(zio)
-
-        n_steps = len(steps)
-        predictions = np.zeros(n_steps, dtype=np.float32)
-        targets = np.zeros(n_steps, dtype=np.float32)
-        raw_times: list[Any] = []
-
-        for i, step in enumerate(steps):
-            pred, tgt, times = load_step(zio, stream, step, sample)
-            # pred/tgt may be 2D (n_pts, n_ch) or 3D (n_pts, n_ch, n_ens)
-            predictions[i] = np.atleast_3d(pred)[lat_indices, ch_idx, :].mean()
-            targets[i] = np.atleast_3d(tgt)[lat_indices, ch_idx, :].mean()
-            raw_times.append(times[0])
+        pred_all, tgt_all, raw_times = _load_series(zio, ref, sample)
+        predictions = pred_all[:, lat_indices].mean(axis=1)
+        targets = tgt_all[:, lat_indices].mean(axis=1)
 
     datetimes = convert_times_to_datetime(np.array(raw_times))
-    _logger.info("%s: %d steps for %s", label, n_steps, variable)
+    _logger.info("%s: %d steps for %s", label, len(datetimes), _level_tag(ref))
 
     return {
         "label": label,
         "predictions": predictions,
         "targets": targets,
         "datetimes": datetimes,
-        "channel": variable,
+        "channel": ref.channel,
+        "tag": _level_tag(ref),
+        "title": _level_title(ref),
     }
 
 
@@ -288,15 +311,13 @@ def create_polar_animation(
     if not data_list:
         return
 
-    var_channel = data_list[0]["channel"]
-    _logger.info("Creating polar map animation for %s…", var_channel)
+    var_channel = data_list[0]["tag"]
+    _logger.info("Creating polar map animation for %s…", data_list[0]["title"])
 
     # Common time axis: use the run with the most frames
     reference_data = max(data_list, key=lambda d: len(d["datetimes"]))
     common_times = reference_data["datetimes"]
-    _logger.info(
-        "  %d frames  %s → %s", len(common_times), common_times[0], common_times[-1]
-    )
+    _logger.info("  %d frames  %s → %s", len(common_times), common_times[0], common_times[-1])
 
     def _ts(t: Any) -> int:
         if isinstance(t, datetime):
@@ -311,9 +332,7 @@ def create_polar_animation(
         start_ts = _ts(data["datetimes"][0])
         pad_frames = sum(1 for t in common_times if _ts(t) < start_ts)
         if pad_frames > 0:
-            pred = np.concatenate(
-                [np.repeat(pred[:1], pad_frames, axis=0), pred], axis=0
-            )
+            pred = np.concatenate([np.repeat(pred[:1], pad_frames, axis=0), pred], axis=0)
             tgt = np.concatenate([np.repeat(tgt[:1], pad_frames, axis=0), tgt], axis=0)
         plot_data.append(
             {
@@ -327,10 +346,7 @@ def create_polar_animation(
 
     # Fixed colour normalisation from full data range
     all_vals = np.concatenate(
-        [
-            np.concatenate([d["predictions"].ravel(), d["targets"].ravel()])
-            for d in plot_data
-        ]
+        [np.concatenate([d["predictions"].ravel(), d["targets"].ravel()]) for d in plot_data]
     )
     if variable == "t":
         cmap = "RdYlBu_r"
@@ -352,15 +368,11 @@ def create_polar_animation(
         )
         cb_label = "Geopotential Height (m)"
 
-    all_diffs = np.concatenate(
-        [(d["predictions"] - d["targets"]).ravel() for d in plot_data]
-    )
+    all_diffs = np.concatenate([(d["predictions"] - d["targets"]).ravel() for d in plot_data])
     diff_abs = max(float(np.percentile(np.abs(all_diffs), 98)), 0.5)
     norm_diff = TwoSlopeNorm(vmin=-diff_abs, vcenter=0.0, vmax=diff_abs)
     diff_label = (
-        "Bias (m/s)"
-        if variable in ("u", "v")
-        else ("Bias (K)" if variable == "t" else "Bias")
+        "Bias (m/s)" if variable in ("u", "v") else ("Bias (K)" if variable == "t" else "Bias")
     )
 
     # Figure: n_exps map rows + 1 thin colorbar row
@@ -383,9 +395,7 @@ def create_polar_animation(
 
     map_axes: list[list[Any]] = []
     for row in range(n_exps):
-        row_ax = [
-            fig.add_subplot(gs[row, col], projection=proj_stereo) for col in range(3)
-        ]
+        row_ax = [fig.add_subplot(gs[row, col], projection=proj_stereo) for col in range(3)]
         for ax in row_ax:
             ax.set_extent([-180, 180, 20, 90], proj_pc)
         map_axes.append(row_ax)
@@ -412,9 +422,7 @@ def create_polar_animation(
                 ax.clear()
                 ax.set_extent([-180, 180, 20, 90], proj_pc)
                 ax.coastlines(linewidth=0.6, color="#333333", zorder=5)
-                ax.gridlines(
-                    linestyle="--", alpha=0.3, linewidth=0.4, color="gray", zorder=4
-                )
+                ax.gridlines(linestyle="--", alpha=0.3, linewidth=0.4, color="gray", zorder=4)
 
             data = plot_data[row_idx]
             tgt_f = data["targets"][frame]
@@ -429,9 +437,7 @@ def create_polar_animation(
 
             if row_idx == 0:
                 for col_idx, hdr in enumerate(col_headers):
-                    row_ax[col_idx].set_title(
-                        hdr, fontsize=10, fontweight="bold", pad=3
-                    )
+                    row_ax[col_idx].set_title(hdr, fontsize=10, fontweight="bold", pad=3)
 
             if n_exps > 1:
                 row_ax[0].text(
@@ -443,16 +449,14 @@ def create_polar_animation(
                     ha="left",
                     fontsize=8,
                     zorder=6,
-                    bbox=dict(
-                        boxstyle="round,pad=0.25", fc="white", alpha=0.75, ec="none"
-                    ),
+                    bbox=dict(boxstyle="round,pad=0.25", fc="white", alpha=0.75, ec="none"),
                 )
 
         t = common_times[frame]
         days = (t - common_times[0]).total_seconds() / 86400
         ssw_flag = "  \u2605 SSW onset" if t.date() == ssw_date.date() else ""
         title_obj.set_text(
-            f"{var_channel} (model level {data_list[0]['model_level']})"
+            f"{data_list[0]['title']}"
             f"  \u00b7  {t.strftime('%Y-%m-%d %H:%M')}  (+{days:.0f}\u2009d){ssw_flag}"
         )
         return []
@@ -466,9 +470,7 @@ def create_polar_animation(
         _logger.info("Saving animation (ffmpeg) to %s…", output_file)
         anim.save(output_file, writer="ffmpeg", fps=fps, dpi=110)
     else:
-        _logger.warning(
-            "ffmpeg not available — saving as GIF instead (larger file, lower quality)"
-        )
+        _logger.warning("ffmpeg not available — saving as GIF instead (larger file, lower quality)")
         output_file = output_dir / f"polar_map_animation_{var_channel}.gif"
         _logger.info("Saving animation (Pillow/GIF) to %s…", output_file)
         anim.save(output_file, writer="pillow", fps=fps, dpi=80)
@@ -491,17 +493,16 @@ def plot_surface_impact(data_list: list[dict[str, Any]], output_dir: Path) -> No
     if not data_list:
         return
 
-    channel = data_list[0]["channel"]
-    _logger.info("Plotting surface impact for %s…", channel)
+    tag = data_list[0]["tag"]
+    title = data_list[0]["title"]
+    _logger.info("Plotting surface impact for %s…", title)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
     colors = plt.cm.tab10(np.linspace(0, 1, 10))
 
     for idx, data in enumerate(data_list):
         datetimes = data["datetimes"]
-        days = np.array(
-            [(dt - datetimes[0]).total_seconds() / 86400 for dt in datetimes]
-        )
+        days = np.array([(dt - datetimes[0]).total_seconds() / 86400 for dt in datetimes])
         color = colors[idx % len(colors)]
 
         ax1.plot(
@@ -539,9 +540,9 @@ def plot_surface_impact(data_list: list[dict[str, Any]], output_dir: Path) -> No
     )
     ax2.axvline(ssw_offset, color="red", linestyle="--", linewidth=2, alpha=0.7)
 
-    ax1.set_ylabel(_variable_label(channel), fontsize=12)
+    ax1.set_ylabel(_variable_label(tag), fontsize=12)
     ax1.set_title(
-        f"Surface Impact of SSW Event: {channel} at 60°N",
+        f"Surface Impact of SSW Event: {title} at 60°N",
         fontsize=14,
         fontweight="bold",
     )
@@ -555,33 +556,45 @@ def plot_surface_impact(data_list: list[dict[str, Any]], output_dir: Path) -> No
     ax2.grid(True, alpha=0.3)
 
     max_days = max(
-        max(
-            (dt - data["datetimes"][0]).total_seconds() / 86400
-            for dt in data["datetimes"]
-        )
+        max((dt - data["datetimes"][0]).total_seconds() / 86400 for dt in data["datetimes"])
         for data in data_list
     )
     ax2.set_xticks(np.arange(0, max_days + 1, 7))
 
     plt.tight_layout()
-    output_file = output_dir / f"surface_impact_{channel}_60N.png"
+    output_file = output_dir / f"surface_impact_{tag}_60N.png"
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     _logger.info("Saved: %s", output_file)
     plt.close()
 
 
-def _variable_label(channel: str) -> str:
-    _labels = {
-        "z_500": "500 hPa Geopotential Height (m)",
-        "z_850": "850 hPa Geopotential Height (m)",
-        "2t": "2m Temperature (K)",
-        "10u": "10m Zonal Wind (m/s)",
-        "10v": "10m Meridional Wind (m/s)",
-        "sp": "Surface Pressure (Pa)",
-        "t_850": "850 hPa Temperature (K)",
-        "u_850": "850 hPa Zonal Wind (m/s)",
-    }
-    return _labels.get(channel, channel)
+_SURFACE_LABELS = {
+    "2t": "2m Temperature (K)",
+    "2d": "2m Dewpoint (K)",
+    "10u": "10m Zonal Wind (m/s)",
+    "10v": "10m Meridional Wind (m/s)",
+    "sp": "Surface Pressure (Pa)",
+    "msl": "Mean Sea-Level Pressure (Pa)",
+    "skt": "Skin Temperature (K)",
+}
+_LEVEL_LABELS = {
+    "u": "Zonal Wind (m/s)",
+    "v": "Meridional Wind (m/s)",
+    "t": "Temperature (K)",
+    "z": "Geopotential (m² s⁻²)",
+    "q": "Specific Humidity (kg/kg)",
+}
+
+
+def _variable_label(tag: str) -> str:
+    """Axis label from a ``_level_tag`` (``'u10hPa'`` → ``'10 hPa Zonal Wind (m/s)'``)."""
+    if tag in _SURFACE_LABELS:
+        return _SURFACE_LABELS[tag]
+    m = re.fullmatch(r"([A-Za-z]+)([\d.]+)hPa", tag)
+    if m:
+        var, p = m.groups()
+        return f"{p} hPa {_LEVEL_LABELS.get(var, var)}"
+    return tag
 
 
 # ---------------------------------------------------------------------------
@@ -619,24 +632,39 @@ def main(argv: list[str] | None = None) -> None:
         help="YAML validations config file.",
     )
 
+    parser.add_argument("--sample", type=int, default=0, help="Sample index (default: 0).")
     parser.add_argument(
-        "--sample", type=int, default=0, help="Sample index (default: 0)."
+        "--level",
+        type=float,
+        default=None,
+        metavar="HPA",
+        help=f"Pressure level (hPa) for the u/t polar maps; the nearest available level in "
+        f"any stream is used (default: {DEFAULT_LEVEL_HPA:g}; 50 for the lower stratosphere).",
     )
     parser.add_argument(
         "--model-level",
         type=int,
-        default=55,
-        help="Model level for stratospheric maps (default: 55 ≈ 77 hPa; use 30 for ~12 hPa).",
+        default=None,
+        help="Legacy alias of --level: L137 model level (e.g. 29 ≈ 10 hPa, 55 ≈ 75 hPa), "
+        "converted to its full-level pressure.",
     )
     parser.add_argument(
+        "--variable",
         "--surface-var",
+        dest="variable",
         type=str,
-        default="u_29",
-        help="Channel for the surface/lower-atmosphere impact time series (default: u_29 ≈ 10 hPa ERA5ml).",
+        default=DEFAULT_VARIABLE,
+        help="Variable for the 60°N impact time series: a surface channel (2t, msl, 10u, sp) "
+        "or <var>_<hPa> such as u_10, t_850, z_500 (default: %(default)s).",
     )
     parser.add_argument(
-        "--fps", type=int, default=10, help="Animation frames per second."
+        "--level-type",
+        choices=("pressure", "model"),
+        default="pressure",
+        help="How to read the numeric suffix of --variable: hPa (default) or L137 model level "
+        "(legacy ERA5ml stores, e.g. --variable u_29 --level-type model).",
     )
+    parser.add_argument("--fps", type=int, default=10, help="Animation frames per second.")
     parser.add_argument(
         "--skip-animation",
         action="store_true",
@@ -644,9 +672,17 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    if args.level is not None and args.model_level is not None:
+        parser.error("--level and --model-level are mutually exclusive")
+    if args.model_level is not None:
+        level_hpa = channel_pressure(f"u_{args.model_level}", "model")
+        if level_hpa is None:
+            parser.error(f"--model-level {args.model_level} is not a valid L137 level")
+        _logger.info("--model-level %d → %s", args.model_level, format_pressure(level_hpa))
+    else:
+        level_hpa = args.level if args.level is not None else DEFAULT_LEVEL_HPA
 
     # Resolve run specs from config or CLI
     if args.validations_config:
@@ -672,8 +708,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
     else:
         run_specs = [
-            {"id": rid, "label": rid, "sample": args.sample, "rank": 0}
-            for rid in args.run_ids
+            {"id": rid, "label": rid, "sample": args.sample, "rank": 0} for rid in args.run_ids
         ]
 
     # -----------------------------------------------------------------------
@@ -690,10 +725,24 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             for var, bucket in (("u", u_data), ("t", t_data)):
                 result = extract_polar_maps(
-                    zarr_path, spec["label"], args.model_level, var, spec["sample"]
+                    zarr_path, spec["label"], level_hpa, var, spec["sample"]
                 )
                 if result is not None:
                     bucket.append(result)
+
+        # Runs may resolve to slightly different nearest levels; animate only
+        # those matching the first run so one figure shows one pressure.
+        for var, bucket in (("u", u_data), ("t", t_data)):
+            if len({d["tag"] for d in bucket}) > 1:
+                keep = bucket[0]["tag"]
+                dropped = [d["label"] for d in bucket if d["tag"] != keep]
+                _logger.warning(
+                    "%s: runs %s resolved to a different level than %s — dropped",
+                    var,
+                    dropped,
+                    keep,
+                )
+                bucket[:] = [d for d in bucket if d["tag"] == keep]
 
         if u_data:
             create_polar_animation(u_data, "u", args.output_dir, args.fps)
@@ -713,7 +762,11 @@ def main(argv: list[str] | None = None) -> None:
         if not zarr_path.exists():
             continue
         result = extract_surface_variable(
-            zarr_path, spec["label"], args.surface_var, sample=spec["sample"]
+            zarr_path,
+            spec["label"],
+            args.variable,
+            sample=spec["sample"],
+            level_type=args.level_type,
         )
         if result is not None:
             surface_data.append(result)
