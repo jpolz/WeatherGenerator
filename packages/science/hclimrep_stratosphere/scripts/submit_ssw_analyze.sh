@@ -19,6 +19,8 @@
 #   qg-tem                   QG-TEM diagnostics: EP flux, divergence, residual circulation
 #   precursors               SSW precursors: heat flux, wave amplitude, blocking index
 #   nam                      Coarse 3-level (50/500/850 hPa) NAM index
+#   forecast-climatology     Lead-dependent bias, RMSE, variance ratio (blurring), 10 hPa spectra
+#   coupling                 Polar-cap "dripping paint", 10->1000 hPa lagged correlation
 #   ifs-comparison            IFS S2S ensemble onset-timing baseline (needs --ifs-file)
 #
 # Options:
@@ -31,7 +33,9 @@
 #   --polar-vortex-extra Extra args for polar-vortex (e.g. '--levels 10 50' in hPa;
 #                        legacy '--channels u_29 u_55' still works for ERA5ml stores)
 #   --dry-run            Print commands, do not execute
-#   --devel              Use develbooster partition (short jobs)
+#   --devel              [no effect; SLURM partition is fixed at submission time,
+#                        not at script-body runtime - pass `--partition=develbooster`
+#                        directly to sbatch instead, see below]
 #   --help               Show this help
 # ============================================================================
 #SBATCH --account=hclimrep
@@ -78,8 +82,13 @@ while [[ $# -gt 0 ]]; do
             done ;;
         --dry-run)          DRY_RUN=true;            shift ;;
         --devel)
-            # Switch partition to develbooster (max 2h, useful for testing)
-            sed -i 's/^#SBATCH --partition=booster/#SBATCH --partition=booster/' "$0" 2>/dev/null || true
+            # NOTE: this has no effect. SLURM reads #SBATCH directives (including
+            # --partition) when `sbatch` parses the script, before the script body
+            # (and this argument parsing) ever runs, so self-editing "$0" here
+            # cannot change the partition of the job that is already executing.
+            # To use the short-job partition, pass it to sbatch directly instead:
+            #   sbatch --partition=develbooster ... submit_ssw_analyze.sh ...
+            echo "WARNING: --devel has no effect; pass --partition=develbooster to sbatch instead (see script header)." >&2
             shift ;;
         --help|-h)
             grep "^#" "$0" | grep -v "^#!/\|^#SBATCH" | sed 's/^# \{0,2\}//'
@@ -184,6 +193,10 @@ for subcmd in "${RUN_CMDS[@]}"; do
             run_cmd precursors ;;
         nam)
             run_cmd nam ;;
+        forecast-climatology)
+            run_cmd forecast-climatology ;;
+        coupling)
+            run_cmd coupling ;;
         ifs-comparison)
             if [[ -z "${IFS_FILE:-}" ]]; then
                 echo "WARNING: skipping ifs-comparison, --ifs-file not set" >&2

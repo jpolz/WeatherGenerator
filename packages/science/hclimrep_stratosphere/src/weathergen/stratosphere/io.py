@@ -162,8 +162,9 @@ def load_step(
         times: (n_pts,)                    numpy datetime64[ns] array
     """
     item = zio.get_data(sample, stream, step)
-    pred = np.asarray(item.prediction.data)
-    tgt = np.asarray(item.target.data)
+    # see load_level: target lacks the ensemble axis in real stores
+    pred = np.atleast_3d(np.asarray(item.prediction.data))
+    tgt = np.atleast_3d(np.asarray(item.target.data))
     times = np.asarray(item.prediction.times)
     return pred, tgt, times
 
@@ -181,7 +182,8 @@ def load_source(
         times: (n_pts,)                    numpy datetime64[ns] array
     """
     item = zio.get_data(sample, stream, 0)
-    src = np.asarray(item.source.data)
+    # see load_level: source lacks the ensemble axis in real stores
+    src = np.atleast_3d(np.asarray(item.source.data))
     times = np.asarray(item.source.times)
     return src, times
 
@@ -475,8 +477,13 @@ def load_level(
     item = zio.get_data(sample, ref.stream, step)
     channels = list(item.prediction.channels)
     ci = channels.index(ref.channel)
-    pred = np.asarray(item.prediction.data)[:, ci, :]
-    tgt = np.asarray(item.target.data)[:, ci, :]
+    # Real stores write target/source without the ensemble axis (2D:
+    # (n_pts, n_channels)), unlike prediction (3D: (n_pts, n_channels, n_ens));
+    # np.atleast_3d appends the missing axis (n_ens=1) so both index the same
+    # way below (see _TEM_STREAM handling in analyze_qg_tem.py for the same
+    # defensive pattern on load_step).
+    pred = np.atleast_3d(np.asarray(item.prediction.data))[:, ci, :]
+    tgt = np.atleast_3d(np.asarray(item.target.data))[:, ci, :]
     times = np.asarray(item.prediction.times)
     return pred, tgt, times
 
@@ -498,8 +505,9 @@ def load_levels(
         if ref.stream not in cache:
             item = zio.get_data(sample, ref.stream, step)
             cache[ref.stream] = (
-                np.asarray(item.prediction.data),
-                np.asarray(item.target.data),
+                # see load_level: target lacks the ensemble axis in real stores
+                np.atleast_3d(np.asarray(item.prediction.data)),
+                np.atleast_3d(np.asarray(item.target.data)),
                 list(item.prediction.channels),
                 np.asarray(item.prediction.times),
             )
@@ -522,7 +530,11 @@ def load_source_level(
     item = zio.get_data(sample, ref.stream, 0)
     channels = list(item.source.channels)
     ci = channels.index(ref.channel)
-    return np.asarray(item.source.data)[:, ci, :], np.asarray(item.source.times)
+    # see load_level: source also lacks the ensemble axis in real stores
+    return (
+        np.atleast_3d(np.asarray(item.source.data))[:, ci, :],
+        np.asarray(item.source.times),
+    )
 
 
 def resolve_channel_arg(
